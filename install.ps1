@@ -18,5 +18,12 @@ if (-Not (Test-Path ".env")) {
     Write-Host ".env creado. Edítalo con tus claves. Tema ntfy: $topic" -ForegroundColor Green
 }
 
+if (-Not (Test-Path "empresas.json")) {
+    Copy-Item "empresas.json.example" "empresas.json"
+    Write-Host "empresas.json creado: edítalo con tus empresas y sus carpetas." -ForegroundColor Green
+}
+if (-Not (Get-Command claude -ErrorAction SilentlyContinue)) {
+    Write-Host "AVISO: no encuentro 'claude'. Instala Claude Code e inicia sesión." -ForegroundColor Yellow
+}
+
 Write-Host "Arrancar: .\venv\Scripts\python.exe main.py" -ForegroundColor Green
-Write-Host "Claude Code: claude mcp add voice-comms -- `"$PWD\venv\Scripts\python.exe`" `"$PWD\mcp_server.py`""

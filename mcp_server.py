@@ -1,39 +1,58 @@
-"""Servidor MCP para que Claude Code / Claude Desktop te avise por Telegram o ntfy."""
-import asyncio
-import contextlib
-import sys
+"""Servidor MCP del buzón. Cada sesión de Claude Code lo lanza con su rol:
+
+- ROL=subjefe -> encargar, alerta_urgente, estado_empresas
+- ROL=empresa -> informar_al_subjefe
+
+Nadie salvo el subjefe habla con el jefe, y solo a través del puente.
+"""
+import os
 
 from mcp.server.mcpserver import MCPServer
 
-from comunicaciones import enviar_audio_telegram, enviar_texto_telegram
+from buzon import Buzon
+from empresas import cargar_empresas
 from notificaciones import enviar_alerta_ntfy
 
-mcp = MCPServer("claude-voice-comms")
+ROL = os.getenv("ROL", "empresa")
+NOMBRE = os.getenv("EMPRESA", "desconocida")
+buzon = Buzon()
+mcp = MCPServer("buzon")
 
+if ROL == "subjefe":
 
-@mcp.tool()
-async def send_telegram_text(mensaje: str) -> str:
-    """Envía un mensaje de texto al Telegram del usuario."""
-    await enviar_texto_telegram(mensaje)
-    return "Mensaje de texto enviado a Telegram."
+    @mcp.tool()
+    async def encargar(empresa: str, orden: str) -> str:
+        """Da una orden a una empresa. Su respuesta te llegará en un mensaje posterior etiquetado [EMPRESA nombre]."""
+        empresas = cargar_empresas()
+        if empresa not in empresas:
+            return f"No existe la empresa '{empresa}'. Disponibles: {', '.join(empresas)}"
+        buzon.enviar("subjefe", empresa, orden)
+        return f"Orden entregada a {empresa}. Su informe llegará más tarde."
 
+    @mcp.tool()
+    async def alerta_urgente(mensaje: str, titulo: str = "Aviso del subjefe") -> str:
+        """Hace sonar el móvil del jefe con una alerta de máxima prioridad. Solo para lo grave o urgente."""
+        ok = await enviar_alerta_ntfy(mensaje, titulo=titulo)
+        return "Alerta enviada al móvil del jefe." if ok else "No se pudo enviar la alerta."
 
-@mcp.tool()
-async def send_telegram_voice(mensaje: str) -> str:
-    """Envía una nota de voz (Kokoro TTS, en español) al Telegram del usuario."""
-    # stdout es el canal MCP: cualquier print de las librerías de audio va a stderr.
-    with contextlib.redirect_stdout(sys.stderr):
-        await enviar_audio_telegram(mensaje)
-    return "Nota de voz enviada a Telegram."
+    @mcp.tool()
+    async def estado_empresas() -> str:
+        """Muestra qué empresas están trabajando y cuántas órdenes tienen en cola."""
+        estado = buzon.resumen_estado()
+        lineas = []
+        for nombre in cargar_empresas():
+            e = estado.get(nombre, {})
+            trabajando = "trabajando" if e.get("en_curso") else "libre"
+            lineas.append(f"{nombre}: {trabajando}, {e.get('pendiente', 0)} órdenes en cola")
+        return "\n".join(lineas) or "No hay empresas configuradas."
 
+else:
 
-@mcp.tool()
-async def send_urgent_alert(mensaje: str, titulo: str = "Alerta de Claude") -> str:
-    """Alerta crítica al móvil del usuario vía ntfy (prioridad máxima) y copia por Telegram.
-    Úsala solo para cosas que requieren atención inmediata."""
-    ok = await enviar_alerta_ntfy(mensaje, titulo=titulo)
-    await enviar_texto_telegram(f"Alerta: {mensaje}")
-    return "Alerta enviada." if ok else "No se pudo enviar a ntfy; se envió solo por Telegram."
+    @mcp.tool()
+    async def informar_al_subjefe(mensaje: str, urgente: bool = False) -> str:
+        """Envía un aviso al subjefe sin terminar tu trabajo. Usa urgente=true solo si es grave."""
+        buzon.enviar(NOMBRE, "subjefe", mensaje, urgente=urgente)
+        return "Aviso entregado al subjefe."
 
 
 if __name__ == "__main__":

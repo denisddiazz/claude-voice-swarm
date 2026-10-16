@@ -1,0 +1,24 @@
+{
+  "codigo": {
+    "descripcion": "Desarrollo de software: repositorios, programación, revisiones de código.",
+    "directorio": "~/proyectos",
+    "modelo": "opus",
+    "permission_mode": "acceptEdits",
+    "allowed_tools": ["Bash(git:*)", "Bash(npm:*)", "Bash(python:*)"]
+  },
+  "sistemas": {
+    "descripcion": "Estado del ordenador y servidores: disco, servicios, contenedores, logs.",
+    "directorio": "~",
+    "modelo": "opus",
+    "permission_mode": "acceptEdits",
+    "allowed_tools": ["Bash(df:*)", "Bash(docker ps:*)", "Bash(systemctl status:*)"]
+  },
+  "investigacion": {
+    "descripcion": "Buscar información en internet y preparar informes.",
+    "directorio": "~/investigacion",
+    "modelo": "opus",
+    "permission_mode": "acceptEdits",
+    "allowed_tools": ["WebSearch", "WebFetch"],
+    "max_budget_usd": 5
+  }
+}

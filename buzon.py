@@ -1,0 +1,117 @@
+"""Buzón compartido (SQLite) por el que pasan todos los mensajes.
+
+Lo usan dos procesos a la vez: el puente (main.py) y los servidores MCP que
+lanza cada sesión de Claude Code. Como está en disco, un reinicio no pierde
+mensajes pendientes.
+
+Participantes: "jefe" (tú), "subjefe" y el nombre de cada empresa.
+"""
+import sqlite3
+import time
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+
+from config import Config
+
+_ESQUEMA = """
+CREATE TABLE IF NOT EXISTS mensajes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    origen TEXT NOT NULL,
+    destino TEXT NOT NULL,
+    texto TEXT NOT NULL,
+    urgente INTEGER NOT NULL DEFAULT 0,
+    modo_voz INTEGER,
+    estado TEXT NOT NULL DEFAULT 'pendiente',
+    creado REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mensajes_destino ON mensajes (destino, estado);
+CREATE TABLE IF NOT EXISTS sesiones (
+    nombre TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    iniciada INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
+class Buzon:
+    def __init__(self, ruta: Path = None):
+        self.ruta = Path(ruta or Config.BUZON_DB)
+        self.ruta.parent.mkdir(parents=True, exist_ok=True)
+        with self._con() as c:
+            c.execute("PRAGMA journal_mode=WAL")
+            c.executescript(_ESQUEMA)
+
+    @contextmanager
+    def _con(self):
+        con = sqlite3.connect(self.ruta, timeout=30, isolation_level=None)
+        con.row_factory = sqlite3.Row
+        try:
+            yield con
+        finally:
+            con.close()
+
+    # --- mensajes ---
+    def enviar(self, origen: str, destino: str, texto: str, urgente: bool = False, modo_voz: bool | None = None) -> int:
+        with self._con() as c:
+            cur = c.execute(
+                "INSERT INTO mensajes (origen, destino, texto, urgente, modo_voz, creado) VALUES (?, ?, ?, ?, ?, ?)",
+                (origen, destino, texto, int(urgente), None if modo_voz is None else int(modo_voz), time.time()),
+            )
+            return cur.lastrowid
+
+    def tomar_pendientes(self, destino: str) -> list[sqlite3.Row]:
+        """Marca como 'en_curso' y devuelve todos los pendientes de un destino (atómico)."""
+        with self._con() as c:
+            c.execute("BEGIN IMMEDIATE")
+            filas = c.execute(
+                "SELECT * FROM mensajes WHERE destino = ? AND estado = 'pendiente' ORDER BY id", (destino,)
+            ).fetchall()
+            if filas:
+                c.executemany("UPDATE mensajes SET estado = 'en_curso' WHERE id = ?", [(f["id"],) for f in filas])
+            c.execute("COMMIT")
+            return filas
+
+    def marcar_hechos(self, ids: list[int]):
+        with self._con() as c:
+            c.executemany("UPDATE mensajes SET estado = 'hecho' WHERE id = ?", [(i,) for i in ids])
+
+    def reiniciar_en_curso(self) -> int:
+        """Al arrancar: lo que quedó a medias por un reinicio vuelve a la cola."""
+        with self._con() as c:
+            return c.execute("UPDATE mensajes SET estado = 'pendiente' WHERE estado = 'en_curso'").rowcount
+
+    def destinos_pendientes(self) -> list[str]:
+        with self._con() as c:
+            return [f[0] for f in c.execute(
+                "SELECT DISTINCT destino FROM mensajes WHERE estado = 'pendiente' AND destino != 'jefe'"
+            )]
+
+    def resumen_estado(self) -> dict[str, dict[str, int]]:
+        with self._con() as c:
+            filas = c.execute(
+                "SELECT destino, estado, COUNT(*) FROM mensajes WHERE estado != 'hecho' GROUP BY destino, estado"
+            ).fetchall()
+        res: dict[str, dict[str, int]] = {}
+        for destino, estado, n in filas:
+            res.setdefault(destino, {})[estado] = n
+        return res
+
+    # --- sesiones de Claude Code ---
+    def sesion(self, nombre: str) -> tuple[str, bool]:
+        with self._con() as c:
+            fila = c.execute("SELECT session_id, iniciada FROM sesiones WHERE nombre = ?", (nombre,)).fetchone()
+            if fila:
+                return fila["session_id"], bool(fila["iniciada"])
+            sid = str(uuid.uuid4())
+            c.execute("INSERT INTO sesiones (nombre, session_id) VALUES (?, ?)", (nombre, sid))
+            return sid, False
+
+    def marcar_sesion_iniciada(self, nombre: str):
+        with self._con() as c:
+            c.execute("UPDATE sesiones SET iniciada = 1 WHERE nombre = ?", (nombre,))
+
+    def nueva_sesion(self, nombre: str):
+        """Olvida la sesión actual; el próximo turno empezará una conversación nueva."""
+        with self._con() as c:
+            c.execute("DELETE FROM sesiones WHERE nombre = ?", (nombre,))

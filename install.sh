@@ -23,17 +23,13 @@ PY="${PYTHON:-python3}"
 if [ ! -f .env ]; then
     echo
     echo "== Configuración (.env) =="
-    read -rp "ANTHROPIC_API_KEY: " ant_key
     read -rp "TELEGRAM_TOKEN (de @BotFather): " tg_token
     read -rp "AUTHORIZED_CHAT_ID (déjalo vacío y el bot te lo dirá al escribirle): " tg_chat
-    read -rp "Carpeta de trabajo del Director [$HOME]: " workdir
     topic="cvs-$("$PY" -c 'import secrets; print(secrets.token_hex(12))')"
 
-    sed -e "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${ant_key}|" \
-        -e "s|^TELEGRAM_TOKEN=.*|TELEGRAM_TOKEN=${tg_token}|" \
+    sed -e "s|^TELEGRAM_TOKEN=.*|TELEGRAM_TOKEN=${tg_token}|" \
         -e "s|^AUTHORIZED_CHAT_ID=.*|AUTHORIZED_CHAT_ID=${tg_chat:-0}|" \
         -e "s|^NTFY_TOPIC=.*|NTFY_TOPIC=${topic}|" \
-        -e "s|^WORKDIR=.*|WORKDIR=${workdir:-$HOME}|" \
         .env.example > .env
     chmod 600 .env
     echo ".env creado. Tu tema de ntfy es: ${topic}"
@@ -42,7 +38,14 @@ else
     echo ".env ya existe, se conserva."
 fi
 
+if [ ! -f empresas.json ]; then
+    cp empresas.json.example empresas.json
+    echo "empresas.json creado a partir del ejemplo: edítalo con tus empresas y sus carpetas."
+fi
+
+command -v claude >/dev/null || echo "AVISO: no encuentro 'claude'. Instala Claude Code y ejecuta 'claude' una vez para iniciar sesión."
+
 echo
 echo "== Listo =="
-echo "Arrancar:            ./run.sh"
-echo "Conectar Claude Code: claude mcp add voice-comms -- \"$(pwd)/venv/bin/python\" \"$(pwd)/mcp_server.py\""
+echo "1. Revisa empresas.json"
+echo "2. Arranca con ./run.sh"
