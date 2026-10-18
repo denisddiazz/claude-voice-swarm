@@ -7,6 +7,7 @@ from pathlib import Path
 
 from buzon import Buzon
 from empresas import NOMBRE_VALIDO, RESERVADOS, Empresa, ErrorEmpresas, resolver_directorio, validar_nombre
+from externas import nombre_por_defecto
 
 
 def nombre_empresa_valido(nombre: str) -> bool:
@@ -59,7 +60,8 @@ def listar_sesiones(empresas: dict[str, Empresa] | None, error_carga: str | None
         return "No hay sesiones. El jefe puede pedirte que crees una."
     return "\n".join(
         f"{e.nombre}: {e.descripcion or '(sin descripción)'} | carpeta {e.directorio}"
-        f"{' | modelo ' + e.modelo if e.modelo else ''} | {e.origen}"
+        f"{' | modelo ' + e.modelo if e.modelo else ''} | origen {e.origen}"
+        f"{' | conversación ' + e.session_id[:8] if e.session_id else ''}"
         for e in empresas.values())
 
 
@@ -68,6 +70,64 @@ def informar_al_subjefe(buzon: Buzon, nombre: str, mensaje: str, urgente: bool, 
         return "Rol de empresa no válido: aviso no entregado."
     buzon.enviar(nombre, "subjefe", mensaje, urgente=bool(urgente), saltos=saltos)
     return "Aviso entregado al subjefe."
+
+
+_AVISO_METODO = {
+    "transcripcion": "",
+    "reciente": (" Aviso: he identificado esta conversación por ser la más reciente de la carpeta; si hay otra "
+                 "sesión abierta en esta misma carpeta, puede haberse dado de alta la otra."),
+}
+
+
+def informar_externo(buzon: Buzon, empresas: dict[str, Empresa] | None, error_carga: str | None,
+                     cwd, session_id: str | None, metodo: str, mensaje: str, urgente: bool = False,
+                     nombre: str | None = None, protegidas: list[Path] | None = None) -> str:
+    """informar_al_subjefe de una sesión externa (abierta por el usuario, no por el puente).
+
+    La sesión se identifica por su carpeta (cwd) y su conversación (session_id). El primer
+    informe la da de alta con origen 'externa' para que `encargar` reanude esa conversación.
+    Si la carpeta ya tiene una sesión externa y llama otra conversación, pasa a ser esta."""
+    if empresas is None:
+        return f"Aviso no entregado: no se pudo cargar la lista de sesiones ({error_carga})."
+    try:
+        d = resolver_directorio("sesion", str(cwd), protegidas)
+    except ErrorEmpresas as e:
+        return f"Aviso no entregado: esta carpeta no puede ser una sesión del subjefe ({e})."
+
+    destino, alta = None, ""
+    if session_id:
+        destino = next((e.nombre for e in empresas.values() if e.session_id == session_id), None)
+        if destino is None:
+            propia = buzon.nombre_por_session_id(session_id)  # conversación lanzada por el propio puente
+            if propia == "subjefe":
+                return "Aviso no entregado: el subjefe no se informa a sí mismo."
+            destino = propia if propia in empresas else None
+    if destino is None:
+        fila = buzon.externa_por_directorio(str(d))
+        if fila is not None:
+            destino = fila["nombre"]
+            if session_id and fila["session_id"] != session_id:
+                buzon.actualizar_session_id_registrada(destino, session_id)
+                alta = f" Esta conversación pasa a ser la sesión '{destino}'."
+    if destino is None:
+        if not session_id:
+            buzon.enviar("sesion-externa", "subjefe", mensaje, urgente=bool(urgente))
+            return ("Aviso entregado, pero no he podido identificar esta conversación: no queda dada de alta "
+                    "y el subjefe no podrá encargarle trabajo.")
+        ocupados = set(empresas) | {f["nombre"] for f in buzon.sesiones_registradas()}
+        if nombre:
+            try:
+                validar_nombre(nombre)
+                if nombre in ocupados:
+                    raise ErrorEmpresas(f"ya existe una sesión llamada '{nombre}'")
+            except ErrorEmpresas as e:
+                return f"Aviso no entregado: {e}. Prueba con otro nombre o sin nombre."
+        destino = nombre or nombre_por_defecto(d, ocupados)
+        buzon.registrar_sesion(destino, str(d), f"Sesión principal de {d.name} (abierta por el jefe)", None,
+                               origen="externa", session_id=session_id)
+        alta = f" Esta sesión queda dada de alta como '{destino}'; el subjefe podrá encargarle trabajo."
+    buzon.enviar(destino, "subjefe", mensaje, urgente=bool(urgente))
+    return f"Aviso entregado al subjefe.{alta}{_AVISO_METODO.get(metodo, '') if alta else ''}"
 
 
 def estado_empresas(buzon: Buzon, empresas: dict[str, Empresa] | None, error_carga: str | None) -> str:

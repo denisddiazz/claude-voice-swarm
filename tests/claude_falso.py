@@ -10,6 +10,7 @@ Cada llamada consume un modo (el último se repite). Modos:
 - error_max_budget: JSON con subtype error_max_budget_usd.
 - dormir: espera 30 s (para probar timeouts).
 Simula las sesiones: --session-id con un UUID ya usado o --resume de uno inexistente fallan sin JSON.
+"existentes": lista de UUID que se dan por creados fuera (sesiones externas).
 Registra en <control>.log una línea JSON por llamada (argv, env, stdin, cwd).
 """
 import json
@@ -46,7 +47,7 @@ if sid_nueva and sid_nueva in estado["sesiones"]:
     guardar()
     print(f"Error: Session ID {sid_nueva} is already in use.", file=sys.stderr)
     sys.exit(1)
-if sid_resume and sid_resume not in estado["sesiones"]:
+if sid_resume and sid_resume not in estado["sesiones"] + conf.get("existentes", []):
     guardar()
     print(f"No conversation found with session ID: {sid_resume}", file=sys.stderr)
     sys.exit(1)

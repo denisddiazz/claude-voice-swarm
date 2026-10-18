@@ -20,6 +20,8 @@ def datos_temporales(tmp_path, monkeypatch):
     """Nada de lo que escriben las pruebas cae en datos/ del repositorio."""
     monkeypatch.setattr(Config, "DATA_DIR", tmp_path / "datos")
     monkeypatch.setattr(Config, "BUZON_DB", tmp_path / "datos" / "buzon.sqlite3")
+    monkeypatch.setattr(Config, "SUBJEFE_DIR", tmp_path / "subjefe")
+    monkeypatch.setattr(Config, "CLAUDE_PROJECTS_DIR", tmp_path / "claude_projects")
 
 
 @pytest.fixture
@@ -32,9 +34,9 @@ class ClaudeFalso:
         self.control = tmp_path / "control.json"
         self.configurar()
 
-    def configurar(self, modos=("ok",), resultado="hecho", coste=0.0):
-        self.control.write_text(json.dumps({"modos": list(modos), "resultado": resultado, "coste": coste}),
-                                encoding="utf-8")
+    def configurar(self, modos=("ok",), resultado="hecho", coste=0.0, existentes=()):
+        self.control.write_text(json.dumps({"modos": list(modos), "resultado": resultado, "coste": coste,
+                                            "existentes": list(existentes)}), encoding="utf-8")
 
     def llamadas(self) -> list[dict]:
         log = Path(str(self.control) + ".log")

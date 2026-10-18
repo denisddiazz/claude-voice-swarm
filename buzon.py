@@ -69,6 +69,10 @@ _MIGRACIONES = [
     ("mensajes", "saltos", "INTEGER NOT NULL DEFAULT 0"),
     ("mensajes", "firma", "TEXT"),
     ("sesiones", "fallos", "INTEGER NOT NULL DEFAULT 0"),
+    ("sesiones", "directorio", "TEXT"),        # carpeta con la que se creó la conversación
+    ("sesiones", "mtime_puente", "REAL"),      # mtime de la transcripción tras el último turno del puente
+    ("sesiones_registradas", "origen", "TEXT NOT NULL DEFAULT 'creada'"),  # 'creada' o 'externa'
+    ("sesiones_registradas", "session_id", "TEXT"),  # conversación existente (sesiones externas)
 ]
 
 
@@ -168,14 +172,45 @@ class Buzon:
         return res
 
     # --- sesiones de Claude Code ---
-    def sesion(self, nombre: str) -> tuple[str, bool]:
+    def sesion(self, nombre: str, directorio: str | None = None) -> tuple[str, bool]:
+        """Conversación propia del puente para `nombre`. Si se pasa `directorio` y la conversación
+        se creó en otra carpeta, se empieza una nueva: Claude Code no la encontraría desde aquí."""
         with self._con() as c:
-            fila = c.execute("SELECT session_id, iniciada FROM sesiones WHERE nombre = ?", (nombre,)).fetchone()
+            fila = c.execute("SELECT session_id, iniciada, directorio FROM sesiones WHERE nombre = ?",
+                             (nombre,)).fetchone()
+            if fila and directorio and fila["directorio"] and fila["directorio"] != directorio:
+                c.execute("DELETE FROM sesiones WHERE nombre = ?", (nombre,))
+                fila = None
             if fila:
+                if directorio and not fila["directorio"]:
+                    c.execute("UPDATE sesiones SET directorio = ? WHERE nombre = ?", (directorio, nombre))
                 return fila["session_id"], bool(fila["iniciada"])
             sid = str(uuid.uuid4())
-            c.execute("INSERT INTO sesiones (nombre, session_id) VALUES (?, ?)", (nombre, sid))
+            c.execute("INSERT INTO sesiones (nombre, session_id, directorio) VALUES (?, ?, ?)",
+                      (nombre, sid, directorio))
             return sid, False
+
+    def info_sesion(self, nombre: str):
+        with self._con() as c:
+            return c.execute("SELECT * FROM sesiones WHERE nombre = ?", (nombre,)).fetchone()
+
+    def fijar_sesion(self, nombre: str, session_id: str):
+        """Apunta `nombre` a una conversación que ya existe (externa o session_id de empresas.json)."""
+        with self._con() as c:
+            fila = c.execute("SELECT session_id FROM sesiones WHERE nombre = ?", (nombre,)).fetchone()
+            if fila and fila["session_id"] == session_id:
+                return
+            c.execute("DELETE FROM sesiones WHERE nombre = ?", (nombre,))
+            c.execute("INSERT INTO sesiones (nombre, session_id, iniciada) VALUES (?, ?, 1)", (nombre, session_id))
+
+    def nombre_por_session_id(self, session_id: str) -> str | None:
+        with self._con() as c:
+            fila = c.execute("SELECT nombre FROM sesiones WHERE session_id = ?", (session_id,)).fetchone()
+            return fila["nombre"] if fila else None
+
+    def registrar_mtime_puente(self, nombre: str, mtime: float):
+        with self._con() as c:
+            c.execute("UPDATE sesiones SET mtime_puente = ? WHERE nombre = ?", (float(mtime), nombre))
 
     def marcar_sesion_iniciada(self, nombre: str):
         with self._con() as c:
@@ -197,11 +232,22 @@ class Buzon:
         with self._con() as c:
             c.execute("UPDATE sesiones SET fallos = 0 WHERE nombre = ?", (nombre,))
 
-    # --- sesiones creadas con crear_sesion (persisten entre reinicios) ---
-    def registrar_sesion(self, nombre: str, directorio: str, descripcion: str, modelo: str | None):
+    # --- sesiones creadas con crear_sesion o dadas de alta al informar (persisten entre reinicios) ---
+    def registrar_sesion(self, nombre: str, directorio: str, descripcion: str, modelo: str | None,
+                         origen: str = "creada", session_id: str | None = None):
         with self._con() as c:
-            c.execute("INSERT INTO sesiones_registradas (nombre, directorio, descripcion, modelo, creado)"
-                      " VALUES (?, ?, ?, ?, ?)", (nombre, directorio, descripcion, modelo, time.time()))
+            c.execute("INSERT INTO sesiones_registradas (nombre, directorio, descripcion, modelo, creado,"
+                      " origen, session_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                      (nombre, directorio, descripcion, modelo, time.time(), origen, session_id))
+
+    def externa_por_directorio(self, directorio: str):
+        with self._con() as c:
+            return c.execute("SELECT * FROM sesiones_registradas WHERE origen = 'externa' AND directorio = ?"
+                             " ORDER BY creado LIMIT 1", (directorio,)).fetchone()
+
+    def actualizar_session_id_registrada(self, nombre: str, session_id: str):
+        with self._con() as c:
+            c.execute("UPDATE sesiones_registradas SET session_id = ? WHERE nombre = ?", (session_id, nombre))
 
     def sesiones_registradas(self) -> list[sqlite3.Row]:
         with self._con() as c:

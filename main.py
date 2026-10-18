@@ -13,7 +13,8 @@ from comunicaciones import responder_por_telegram, set_bot
 from config import Config
 from empresas import ErrorEmpresas, cargar_todas
 from notificaciones import enviar_alerta_ntfy
-from sesiones import SILENCIO, ErrorSesion, args_empresa, args_subjefe, componer_turno_subjefe, ejecutar_turno
+from sesiones import (SILENCIO, ErrorSesion, args_empresa, args_subjefe, componer_turno_subjefe, ejecutar_turno,
+                      migrar_subjefe, preparar_carpeta_subjefe)
 from voice_engine import transcribir_bytes
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -25,6 +26,8 @@ class Puente:
     def __init__(self):
         # Clave solo en memoria: firma los mensajes del jefe y del sistema (A5).
         self.buzon = Buzon(clave=secrets.token_bytes(32))
+        preparar_carpeta_subjefe()
+        migrar_subjefe(self.buzon)
         self.empresas = cargar_todas(self.buzon)
         self.trabajando: dict[str, asyncio.Task] = {}
         self.ultimo_modo_voz = False
@@ -92,6 +95,7 @@ class Puente:
             self.buzon.marcar_hechos([f["id"] for f in filas])
 
     async def _turno_subjefe(self, filas):
+        self.recargar_empresas()  # una sesión externa puede haberse dado de alta al enviar este informe
         prompt, hay_jefe, saltos = componer_turno_subjefe(self.buzon, filas)
         modo_voz = self.ultimo_modo_voz
         for f in filas:
@@ -102,7 +106,7 @@ class Puente:
         escribiendo = asyncio.create_task(self._indicador(modo_voz))
         try:
             respuesta = await ejecutar_turno(
-                self.buzon, "subjefe", prompt, Config.DATA_DIR / "subjefe",
+                self.buzon, "subjefe", prompt, Config.SUBJEFE_DIR,
                 # crear_sesion solo se habilita si en este turno hay un mensaje del jefe con firma válida.
                 args_subjefe(self.empresas, saltos, permitir_crear=hay_jefe), Config.SUBJEFE_TIMEOUT,
             )
@@ -124,7 +128,7 @@ class Puente:
         logger.info(f"[{nombre}] turno con {len(filas)} órdenes (saltos={saltos})")
         try:
             informe = await ejecutar_turno(self.buzon, nombre, prompt, e.directorio, args_empresa(e, saltos),
-                                           Config.EMPRESA_TIMEOUT)
+                                           Config.EMPRESA_TIMEOUT, sid_fijo=e.session_id)
             self.buzon.enviar(nombre, "subjefe", informe or "(terminó sin informe)", saltos=saltos)
         except Exception as ex:
             logger.exception(f"Fallo de la empresa {nombre}")
@@ -204,7 +208,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Listo. Háblale al subjefe por voz o por texto.\n"
             "/estado: qué está haciendo cada uno y gasto de hoy\n/probar_alerta: prueba ntfy\n"
             "/nueva_sesion <nombre>: olvida la conversación del subjefe o de una empresa\n"
-            "/borrar_sesion <nombre>: quita una sesión creada con crear_sesion (no borra su carpeta)"
+            "/borrar_sesion <nombre>: quita una sesión creada con crear_sesion o una externa "
+            "(no borra su carpeta ni, si es externa, su conversación)"
         )
 
 
@@ -233,12 +238,19 @@ async def cmd_nueva_sesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if nombre in puente.trabajando:
         await update.effective_message.reply_text(f"{nombre} está trabajando; espera a que termine el turno.")
         return
+    e = puente.empresas.get(nombre)
+    if e is not None and e.session_id:
+        await update.effective_message.reply_text(
+            f"{nombre} reanuda una conversación existente ({e.origen}): no se puede empezar otra desde aquí. "
+            "Usa /borrar_sesion o cambia session_id en empresas.json.")
+        return
     puente.buzon.nueva_sesion(nombre)
     await update.effective_message.reply_text(f"La próxima vez, {nombre} empezará una conversación nueva.")
 
 
 async def cmd_borrar_sesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Quita una sesión creada con crear_sesion del registro. No borra su carpeta."""
+    """Quita del registro una sesión creada con crear_sesion o una externa. No borra su carpeta;
+    de una externa tampoco borra su conversación: el puente solo deja de apuntar a ella."""
     if not await _autorizado(update):
         return
     nombre = (context.args or [""])[0]
@@ -249,7 +261,7 @@ async def cmd_borrar_sesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if e is None:
         await update.effective_message.reply_text(f"No existe la sesión '{nombre}'.")
         return
-    if e.origen != "creada":
+    if e.origen not in ("creada", "externa"):
         await update.effective_message.reply_text(
             f"'{nombre}' está definida en empresas.json: edita ese fichero para quitarla.")
         return
@@ -259,8 +271,15 @@ async def cmd_borrar_sesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not puente.buzon.borrar_sesion_registrada(nombre):
         await update.effective_message.reply_text(f"No existe la sesión '{nombre}'.")
         return
-    puente.buzon.nueva_sesion(nombre)  # olvida la conversación: recrearla con el mismo nombre empieza de cero
+    # Olvida el puntero del puente a la conversación: recrearla con el mismo nombre empieza de cero.
+    # La transcripción de Claude Code no se toca (en una externa, sigue abierta en la app).
+    puente.buzon.nueva_sesion(nombre)
     puente.recargar_empresas()
+    if e.origen == "externa":
+        await update.effective_message.reply_text(
+            f"Sesión externa '{nombre}' dada de baja. Su conversación y su carpeta {e.directorio} no se han "
+            "tocado; si vuelve a informar al subjefe, se dará de alta otra vez.")
+        return
     await update.effective_message.reply_text(f"Sesión '{nombre}' borrada. Su carpeta {e.directorio} no se ha tocado.")
 
 

@@ -1,9 +1,11 @@
-"""Sesiones de abajo ("empresas"): las de empresas.json más las creadas con crear_sesion.
+"""Sesiones de abajo ("empresas"): las de empresas.json, las creadas con crear_sesion y las
+externas (sesiones abiertas por el usuario que se dieron de alta al informar al subjefe).
 
 Cada sesión es una sesión normal de Claude Code en su carpeta y usa su propia
 configuración (settings de usuario, de proyecto y locales). El puente no impone
 permisos: `modelo`, `permission_mode`, `allowed_tools` y `setting_sources` son
-sustituciones opcionales por sesión.
+sustituciones opcionales por sesión. Con `session_id`, el puente reanuda esa
+conversación ya existente en lugar de crear una propia.
 """
 import json
 import re
@@ -15,6 +17,7 @@ from config import BASE_DIR, Config
 RESERVADOS = {"jefe", "subjefe", "sistema"}
 NOMBRE_VALIDO = re.compile(r"^[a-z0-9_-]{1,40}$")
 MODOS_PERMISO = {"default", "acceptEdits", "dontAsk", "plan", "auto", "bypassPermissions"}
+SESSION_ID_VALIDO = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 class ErrorEmpresas(ValueError):
@@ -31,7 +34,8 @@ class Empresa:
     allowed_tools: list[str] | None = None
     setting_sources: str | None = None
     max_budget_usd: float | None = None    # None: EMPRESA_MAX_BUDGET_USD de .env (0 = sin tope)
-    origen: str = "empresas.json"          # o "creada" (con crear_sesion)
+    origen: str = "empresas.json"          # o "creada" (con crear_sesion) o "externa" (alta al informar)
+    session_id: str | None = None          # conversación existente que se reanuda; None: la crea el puente
 
 
 def _dentro(a: Path, b: Path) -> bool:
@@ -40,7 +44,8 @@ def _dentro(a: Path, b: Path) -> bool:
 
 
 def carpetas_protegidas() -> list[Path]:
-    return [BASE_DIR.resolve(), Config.DATA_DIR.resolve()]
+    """Ninguna sesión puede trabajar en la carpeta del puente, la de sus datos ni la del subjefe."""
+    return [BASE_DIR.resolve(), Config.DATA_DIR.resolve(), Config.SUBJEFE_DIR.resolve()]
 
 
 def resolver_directorio(nombre: str, valor, protegidas: list[Path] | None = None) -> Path:
@@ -88,6 +93,9 @@ def desde_conf(nombre: str, conf: dict, origen: str = "empresas.json",
     if presupuesto is not None and (isinstance(presupuesto, bool) or not isinstance(presupuesto, (int, float))
                                     or presupuesto < 0):
         raise ErrorEmpresas(f"{nombre}: 'max_budget_usd' debe ser un número >= 0 (0 = sin tope)")
+    session_id = _opcional_str(nombre, conf, "session_id")
+    if session_id is not None and not SESSION_ID_VALIDO.match(session_id):
+        raise ErrorEmpresas(f"{nombre}: 'session_id' debe ser el UUID de una conversación de Claude Code")
 
     return Empresa(
         nombre=nombre,
@@ -99,6 +107,7 @@ def desde_conf(nombre: str, conf: dict, origen: str = "empresas.json",
         setting_sources=_opcional_str(nombre, conf, "setting_sources"),
         max_budget_usd=float(presupuesto) if presupuesto is not None else None,
         origen=origen,
+        session_id=session_id.lower() if session_id else None,
     )
 
 
@@ -125,8 +134,9 @@ def cargar_todas(buzon, ruta: Path = None, protegidas: list[Path] | None = None)
         try:
             empresas[fila["nombre"]] = desde_conf(
                 fila["nombre"],
-                {"directorio": fila["directorio"], "descripcion": fila["descripcion"], "modelo": fila["modelo"]},
-                origen="creada", protegidas=protegidas)
+                {"directorio": fila["directorio"], "descripcion": fila["descripcion"], "modelo": fila["modelo"],
+                 "session_id": fila["session_id"]},
+                origen=fila["origen"] or "creada", protegidas=protegidas)
         except ErrorEmpresas:
             continue  # una fila inválida no tumba al resto
     return empresas

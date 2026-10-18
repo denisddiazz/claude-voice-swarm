@@ -6,9 +6,11 @@ from dotenv import dotenv_values, load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 
-# El servidor MCP de una empresa no necesita ningún secreto: no carga .env.
-if os.getenv("ROL") != "empresa":
+# El servidor MCP de una empresa o de una sesión externa no necesita ningún secreto: no carga .env.
+if os.getenv("ROL") not in ("empresa", "externa"):
     load_dotenv(ENV_FILE)
+
+_SUBJEFE_DIR_DEFECTO = r"C:\Cositas\Subjefe" if os.name == "nt" else "~/Subjefe"
 
 
 def ruta_proyecto(valor, por_defecto: Path) -> Path:
@@ -33,6 +35,13 @@ class Config:
     EMPRESA_TIMEOUT = int(os.getenv("EMPRESA_TIMEOUT", "3600"))
     EMPRESAS_FILE = ruta_proyecto(os.getenv("EMPRESAS_FILE"), BASE_DIR / "empresas.json")
     DATA_DIR = ruta_proyecto(os.getenv("DATA_DIR"), BASE_DIR / "datos")
+    # Carpeta de trabajo del subjefe: su CLAUDE.md fija su papel y .claude/skills sus skills.
+    SUBJEFE_DIR = ruta_proyecto(os.getenv("SUBJEFE_DIR"), Path(_SUBJEFE_DIR_DEFECTO))
+    # Transcripciones de Claude Code (~/.claude/projects o CLAUDE_CONFIG_DIR/projects).
+    CLAUDE_PROJECTS_DIR = Path(os.getenv("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser() / "projects"
+    # Sesiones externas: no se reanudan si su conversación tuvo actividad fuera del puente hace
+    # menos de estos minutos (probablemente está abierta en la app). 0 = sin comprobación.
+    EXTERNA_MARGEN_MIN = _float("EXTERNA_MARGEN_MIN", "10")
 
     # --- Gasto (opcional; 0 = sin tope) ---
     SUBJEFE_MAX_BUDGET_USD = _float("SUBJEFE_MAX_BUDGET_USD", "0")  # por turno del subjefe

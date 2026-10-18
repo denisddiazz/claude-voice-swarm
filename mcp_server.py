@@ -2,6 +2,7 @@
 
 - ROL=subjefe -> encargar, crear_sesion, listar_sesiones, estado_empresas, alerta_urgente
 - ROL=empresa -> informar_al_subjefe
+- ROL=externa -> informar_al_subjefe para sesiones abiertas por el usuario (se dan de alta solas)
 
 Nadie salvo el subjefe habla con el jefe, y solo a través del puente. Ningún rol
 puede escribir en el buzón con origen 'jefe'. El rol, el nombre y el contador de
@@ -80,6 +81,27 @@ elif ROL == "empresa":
     async def informar_al_subjefe(mensaje: str, urgente: bool = False) -> str:
         """Envía un aviso al subjefe sin terminar tu trabajo. Usa urgente=true solo si es grave."""
         return herramientas.informar_al_subjefe(buzon, NOMBRE, mensaje, urgente, SALTOS)
+
+elif ROL == "externa":
+    # Registrado a nivel de usuario (registrar-mcp-usuario.ps1): lo cargan todas las sesiones
+    # del usuario. En las que lanza el propio puente no ofrece nada: ya tienen mcp__buzon.
+    if os.getenv("CLAUDE_VOICE_SWARM_PUENTE") != "1":
+        import externas
+        from empresas import ErrorEmpresas, cargar_todas
+
+        @mcp.tool()
+        async def informar_al_subjefe(mensaje: str, urgente: bool = False, nombre: str | None = None) -> str:
+            """Envía un informe al subjefe, que se lo resume al jefe. La primera vez da de alta esta
+            sesión (por defecto con el nombre de su carpeta; `nombre`: a-z, 0-9, _ y -) para que el
+            subjefe pueda encargarle trabajo. Usa urgente=true solo si es grave."""
+            cwd = os.getenv("CLAUDE_PROJECT_DIR") or os.getcwd()
+            sid, metodo = externas.identificar_sesion(cwd, os.environ, mensaje)
+            try:
+                empresas, error = cargar_todas(buzon), None
+            except ErrorEmpresas as e:
+                empresas, error = None, str(e)
+            return herramientas.informar_externo(buzon, empresas, error, cwd, sid, metodo, mensaje,
+                                                 urgente, nombre)
 
 else:
     raise SystemExit(f"ROL desconocido: {ROL!r}")
