@@ -36,6 +36,7 @@ class Empresa:
     max_budget_usd: float | None = None    # None: EMPRESA_MAX_BUDGET_USD de .env (0 = sin tope)
     origen: str = "empresas.json"          # o "creada" (con crear_sesion) o "externa" (alta al informar)
     session_id: str | None = None          # conversación existente que se reanuda; None: la crea el puente
+    caducada: bool = False                 # externa cuya conversación ya no existe: no se le encarga nada
 
 
 def _dentro(a: Path, b: Path) -> bool:
@@ -132,11 +133,13 @@ def cargar_todas(buzon, ruta: Path = None, protegidas: list[Path] | None = None)
         if fila["nombre"] in empresas:
             continue
         try:
-            empresas[fila["nombre"]] = desde_conf(
+            e = desde_conf(
                 fila["nombre"],
                 {"directorio": fila["directorio"], "descripcion": fila["descripcion"], "modelo": fila["modelo"],
                  "session_id": fila["session_id"]},
                 origen=fila["origen"] or "creada", protegidas=protegidas)
+            e.caducada = bool(fila["caducada"])
+            empresas[fila["nombre"]] = e
         except ErrorEmpresas:
             continue  # una fila inválida no tumba al resto
     return empresas

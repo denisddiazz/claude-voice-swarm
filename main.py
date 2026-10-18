@@ -258,10 +258,12 @@ class Puente:
         logger.info(f"[{nombre}] turno con {len(filas)} órdenes (saltos={saltos})")
         try:
             informe = await ejecutar_turno(self.buzon, nombre, prompt, e.directorio, args_empresa(e, saltos),
-                                           Config.EMPRESA_TIMEOUT, sid_fijo=e.session_id)
+                                           Config.EMPRESA_TIMEOUT, sid_fijo=e.session_id,
+                                           externa=e.origen == "externa")
             self.buzon.enviar(nombre, "subjefe", informe or "(terminó sin informe)", saltos=saltos)
         except Exception as ex:
             logger.exception(f"Fallo de la empresa {nombre}")
+            self.recargar_empresas()  # una externa puede haber quedado caducada en este turno
             # Lo escribe el puente con origen 'sistema' (firmado); el subjefe lo ve como aviso del sistema.
             self.buzon.enviar("sistema", "subjefe", f"La sesión de la empresa {nombre} falló: {ex}", saltos=saltos)
             if isinstance(ex, ErrorSesion) and ex.recreada:

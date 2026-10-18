@@ -107,6 +107,7 @@ _MIGRACIONES = [
     ("sesiones", "mtime_puente", "REAL"),      # mtime de la transcripción tras el último turno del puente
     ("sesiones_registradas", "origen", "TEXT NOT NULL DEFAULT 'creada'"),  # 'creada' o 'externa'
     ("sesiones_registradas", "session_id", "TEXT"),  # conversación existente (sesiones externas)
+    ("sesiones_registradas", "caducada", "INTEGER NOT NULL DEFAULT 0"),  # externa cuya conversación ya no existe
     ("mensajes", "canal", "TEXT"),             # por dónde llegó un mensaje del jefe ('movil' o 'pc')
     ("alertas", "mensaje", "TEXT"),            # texto de la alerta (se copia al PC si es el canal activo)
     ("alertas", "titulo", "TEXT"),
@@ -291,8 +292,21 @@ class Buzon:
                              " ORDER BY creado LIMIT 1", (directorio,)).fetchone()
 
     def actualizar_session_id_registrada(self, nombre: str, session_id: str):
+        """Apunta la sesión registrada a otra conversación; si estaba caducada, vuelve a estar activa."""
         with self._con() as c:
-            c.execute("UPDATE sesiones_registradas SET session_id = ? WHERE nombre = ?", (session_id, nombre))
+            c.execute("UPDATE sesiones_registradas SET session_id = ?, caducada = 0 WHERE nombre = ?",
+                      (session_id, nombre))
+
+    def marcar_caducada(self, nombre: str):
+        """Una sesión externa cuya conversación ya no existe: no se le encarga nada hasta que informe de nuevo."""
+        with self._con() as c:
+            c.execute("UPDATE sesiones_registradas SET caducada = 1 WHERE nombre = ? AND origen = 'externa'",
+                      (nombre,))
+
+    def sesion_caducada(self, nombre: str) -> bool:
+        with self._con() as c:
+            fila = c.execute("SELECT caducada FROM sesiones_registradas WHERE nombre = ?", (nombre,)).fetchone()
+            return bool(fila and fila["caducada"])
 
     def sesiones_registradas(self) -> list[sqlite3.Row]:
         with self._con() as c:

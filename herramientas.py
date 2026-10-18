@@ -69,6 +69,9 @@ def encargar(buzon: Buzon, empresas: dict[str, Empresa] | None, error_carga: str
         return f"No puedo encargar nada: {error_carga or 'empresas.json no cargado'}"
     if empresa not in empresas:
         return f"No existe la sesión '{empresa}'. Disponibles: {', '.join(empresas) or '(ninguna)'}"
+    if empresas[empresa].caducada:
+        return (f"No encargo nada a '{empresa}': su conversación ya no existe (se cerró o archivó en la app). "
+                f"Avisa al jefe: bórrala con /borrar_sesion {empresa} o que vuelva a darla de alta desde una sesión abierta.")
     nuevo = saltos + 1
     if max_rebotes > 0 and nuevo > max_rebotes:
         return (f"Límite de encargos encadenados alcanzado ({max_rebotes}) sin un mensaje del jefe. "
@@ -128,6 +131,7 @@ def listar_sesiones(empresas: dict[str, Empresa] | None, error_carga: str | None
     return "\n".join(
         f"{e.nombre}: {e.descripcion or '(sin descripción)'} | carpeta {e.directorio}"
         f"{' | modelo ' + e.modelo if e.modelo else ''} | origen {e.origen}"
+        f"{' | CADUCADA: la conversación ya no existe' if e.caducada else ''}"
         f"{' | conversación ' + e.session_id[:8] if e.session_id else ''}"
         for e in empresas.values())
 
@@ -179,6 +183,10 @@ def informar_externo(buzon: Buzon, empresas: dict[str, Empresa] | None, error_ca
             if session_id and fila["session_id"] != session_id:
                 buzon.actualizar_session_id_registrada(destino, session_id)
                 alta = f" Esta conversación pasa a ser la sesión '{destino}'."
+    if destino is not None and session_id and not alta and destino in empresas and empresas[destino].caducada:
+        # La misma conversación vuelve a informar (o su carpeta): la sesión caducada vuelve a estar activa.
+        buzon.actualizar_session_id_registrada(destino, session_id)
+        alta = f" La sesión '{destino}' vuelve a estar activa."
     if destino is None:
         if not session_id:
             buzon.enviar("sesion-externa", "subjefe", mensaje, urgente=bool(urgente))

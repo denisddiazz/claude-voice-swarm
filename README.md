@@ -93,6 +93,7 @@ Los nombres solo admiten `a-z`, `0-9`, `_` y `-`; `jefe`, `subjefe` y `sistema` 
 5. El `session_id` sale de la variable `CLAUDE_CODE_SESSION_ID` que Claude Code pone en sus procesos hijos (vista en 2.1.296 en los comandos de una sesión de la app; no documentada, y falta confirmar que llega a los servidores MCP), siempre que su transcripción esté en esa carpeta. Si no, se busca en `~/.claude/projects/<carpeta codificada>/` la transcripción reciente que contiene el informe y, si no, la más reciente; en ese último caso la respuesta de la herramienta lo avisa, porque con dos sesiones abiertas en la misma carpeta puede elegir la otra.
 6. **Concurrencia:** si la conversación tuvo actividad fuera del puente hace menos de `EXTERNA_MARGEN_MIN` minutos (10 por defecto), el puente no la reanuda: la orden no se entrega y el subjefe recibe el aviso. Si la reanudara con la app abierta, las dos escribirían en la misma conversación y la app no vería el turno del puente.
 7. `/borrar_sesion <nombre>` la da de baja sin tocar su conversación ni su carpeta. Si vuelve a informar, se da de alta otra vez.
+8. **Caducidad:** si la transcripción `.jsonl` ya no existe (se cerró o archivó en la app) o `claude` responde "No conversation found", la sesión queda `caducada`: `listar_sesiones` lo muestra, no se le encarga nada y el subjefe recibe el aviso. Si su carpeta vuelve a informar desde una conversación, se reactiva con el `session_id` nuevo.
 
 Ninguna sesión, externa o no, puede tener como carpeta la del puente, la de `datos/` o la del subjefe.
 

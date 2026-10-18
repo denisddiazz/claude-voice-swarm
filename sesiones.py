@@ -431,14 +431,33 @@ async def _turno_fork(buzon: Buzon, nombre: str, prompt: str, cwd: Path, args: l
     return None, (extracto + "\n\n" + prompt) if extracto else prompt
 
 
+def _mensaje_caducada(nombre: str) -> str:
+    return (f"la conversación de {nombre} ya no existe (se cerró o archivó en la app); bórrala con "
+            f"/borrar_sesion {nombre} o vuelve a darla de alta desde una sesión abierta")
+
+
+def _caducar(buzon: Buzon, nombre: str) -> ErrorSesion:
+    """Sesión externa cuya conversación no existe: queda caducada hasta que su carpeta informe de nuevo."""
+    buzon.marcar_caducada(nombre)
+    logger.warning(f"{nombre}: la conversación ya no existe; sesión marcada como caducada")
+    return ErrorSesion(_mensaje_caducada(nombre))
+
+
 async def ejecutar_turno(buzon: Buzon, nombre: str, prompt: str, cwd: Path, args: list[str], timeout: int,
-                         sid_fijo: str | None = None) -> str:
+                         sid_fijo: str | None = None, externa: bool = False) -> str:
     """Ejecuta un turno `claude -p` en la sesión persistente de `nombre` y devuelve su respuesta.
 
     `sid_fijo`: conversación que ya existe fuera del puente (sesión externa o session_id de
     empresas.json). Siempre se reanuda, nunca se recrea, y no se toca si tuvo actividad ajena
-    hace menos de EXTERNA_MARGEN_MIN (probablemente está abierta en la app)."""
+    hace menos de EXTERNA_MARGEN_MIN (probablemente está abierta en la app).
+    `externa`: la sesión se dio de alta al informar. Si su transcripción no existe, o claude
+    responde "No conversation found", queda caducada y no se reanuda."""
     if sid_fijo:
+        if externa:
+            if buzon.sesion_caducada(nombre):
+                raise ErrorSesion(_mensaje_caducada(nombre))
+            if not externas.transcripcion(cwd, sid_fijo).exists():
+                raise _caducar(buzon, nombre)
         buzon.fijar_sesion(nombre, sid_fijo)
         hace = externas.actividad_ajena(buzon, nombre, cwd, sid_fijo, Config.EXTERNA_MARGEN_MIN * 60)
         if hace is not None:
@@ -461,6 +480,8 @@ async def ejecutar_turno(buzon: Buzon, nombre: str, prompt: str, cwd: Path, args
             sid, iniciada = buzon.sesion(nombre, str(cwd))
 
     def fallo(e: ErrorSesion) -> ErrorSesion:
+        if sid_fijo and externa and "No conversation found" in str(e):
+            return _caducar(buzon, nombre)
         if sid_fijo:  # una conversación ajena no se descarta: se informa y ya
             return ErrorSesion(f"{e} (es una conversación existente: no se recrea)")
         return _tras_fallo(buzon, nombre, iniciada, e)
