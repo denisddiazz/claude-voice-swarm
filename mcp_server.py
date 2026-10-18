@@ -1,11 +1,12 @@
 """Servidor MCP del buzón. Cada sesión de Claude Code lo lanza con su rol:
 
-- ROL=subjefe -> encargar, alerta_urgente, estado_empresas
+- ROL=subjefe -> encargar, crear_sesion, listar_sesiones, estado_empresas, alerta_urgente
 - ROL=empresa -> informar_al_subjefe
 
 Nadie salvo el subjefe habla con el jefe, y solo a través del puente. Ningún rol
 puede escribir en el buzón con origen 'jefe'. El rol, el nombre y el contador de
 encargos encadenados (SALTOS) vienen del JSON de --mcp-config que escribe el puente.
+PERMITIR_CREAR=1 solo lo pone el puente en un turno con un mensaje del jefe con firma válida.
 """
 import os
 
@@ -22,19 +23,37 @@ mcp = MCPServer("buzon")
 
 if ROL == "subjefe":
     from config import Config
-    from empresas import ErrorEmpresas, cargar_empresas
+    from empresas import ErrorEmpresas, cargar_todas
     from notificaciones import enviar_alerta_ntfy
 
     MAX_REBOTES = int(os.getenv("MAX_REBOTES", str(Config.MAX_REBOTES)))
-    try:
-        EMPRESAS, ERROR_CARGA = cargar_empresas(), None
-    except ErrorEmpresas as e:
-        EMPRESAS, ERROR_CARGA = None, str(e)
+    PERMITIR_CREAR = os.getenv("PERMITIR_CREAR") == "1"
+
+    def _empresas():
+        """Se relee en cada llamada: incluye las sesiones creadas en este mismo turno."""
+        try:
+            return cargar_todas(buzon), None
+        except ErrorEmpresas as e:
+            return None, str(e)
 
     @mcp.tool()
     async def encargar(empresa: str, orden: str) -> str:
-        """Da una orden a una empresa. Su informe te llegará en un mensaje posterior con origen empresa:nombre."""
-        return herramientas.encargar(buzon, EMPRESAS, ERROR_CARGA, empresa, orden, SALTOS, MAX_REBOTES)
+        """Da una orden a una sesión. Su informe te llegará en un mensaje posterior con origen empresa:nombre."""
+        empresas, error = _empresas()
+        return herramientas.encargar(buzon, empresas, error, empresa, orden, SALTOS, MAX_REBOTES)
+
+    @mcp.tool()
+    async def crear_sesion(nombre: str, carpeta: str, descripcion: str, modelo: str | None = None) -> str:
+        """Crea una sesión nueva de Claude Code en `carpeta` (la crea si no existe) y la deja lista para
+        `encargar`. Solo si el jefe lo ha pedido expresamente en este turno. `nombre`: a-z, 0-9, _ y -."""
+        empresas, _ = _empresas()
+        return herramientas.crear_sesion(buzon, empresas, PERMITIR_CREAR, nombre, carpeta, descripcion, modelo)
+
+    @mcp.tool()
+    async def listar_sesiones() -> str:
+        """Lista las sesiones disponibles con su descripción, carpeta y modelo."""
+        empresas, error = _empresas()
+        return herramientas.listar_sesiones(empresas, error)
 
     @mcp.tool()
     async def alerta_urgente(mensaje: str, titulo: str = "Aviso del subjefe") -> str:
@@ -50,7 +69,8 @@ if ROL == "subjefe":
     @mcp.tool()
     async def estado_empresas() -> str:
         """Muestra qué empresas están trabajando y cuántas órdenes tienen en cola."""
-        return herramientas.estado_empresas(buzon, EMPRESAS, ERROR_CARGA)
+        empresas, error = _empresas()
+        return herramientas.estado_empresas(buzon, empresas, error)
 
 elif ROL == "empresa":
     if not herramientas.nombre_empresa_valido(NOMBRE):

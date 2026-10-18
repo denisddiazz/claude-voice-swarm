@@ -32,9 +32,12 @@ def test_ruta_absoluta_se_respeta(tmp_path):
     assert ruta_proyecto(str(tmp_path / "e.json"), BASE_DIR) == (tmp_path / "e.json").resolve()
 
 
-def test_empresas_inexistente_lanza_error_normal_no_systemexit(tmp_path):
+def test_empresas_json_es_opcional_y_los_errores_no_son_systemexit(tmp_path):
+    assert cargar_empresas(tmp_path / "no_existe.json") == {}
+    roto = tmp_path / "roto.json"
+    roto.write_text("{no es json", encoding="utf-8")
     with pytest.raises(ErrorEmpresas):
-        cargar_empresas(tmp_path / "no_existe.json")
+        cargar_empresas(roto)
     assert issubclass(ErrorEmpresas, Exception)
 
 

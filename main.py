@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 from buzon import Buzon
 from comunicaciones import responder_por_telegram, set_bot
 from config import Config
-from empresas import ErrorEmpresas, cargar_empresas
+from empresas import ErrorEmpresas, cargar_todas
 from notificaciones import enviar_alerta_ntfy
 from sesiones import SILENCIO, ErrorSesion, args_empresa, args_subjefe, componer_turno_subjefe, ejecutar_turno
 from voice_engine import transcribir_bytes
@@ -25,11 +25,18 @@ class Puente:
     def __init__(self):
         # Clave solo en memoria: firma los mensajes del jefe y del sistema (A5).
         self.buzon = Buzon(clave=secrets.token_bytes(32))
-        self.empresas = cargar_empresas()
+        self.empresas = cargar_todas(self.buzon)
         self.trabajando: dict[str, asyncio.Task] = {}
         self.ultimo_modo_voz = False
         self.bot = None
         self._tope_avisado: date | None = None
+
+    def recargar_empresas(self):
+        """Recoge las sesiones creadas con crear_sesion. Si empresas.json se ha roto, se mantiene la lista."""
+        try:
+            self.empresas = cargar_todas(self.buzon)
+        except ErrorEmpresas as e:
+            logger.error(f"No se pudieron recargar las sesiones: {e}")
 
     def presupuesto_agotado(self) -> bool:
         """A7: tope diario global sobre el coste que declara Claude Code en cada turno."""
@@ -71,6 +78,8 @@ class Puente:
         # Un único turno a la vez por sesión; lo que llegue mientras tanto va en el siguiente.
         while not self.presupuesto_agotado() and (filas := self.buzon.tomar_pendientes(destino)):
             try:
+                if destino != "subjefe" and destino not in self.empresas:
+                    self.recargar_empresas()  # puede ser una sesión recién creada
                 if destino == "subjefe":
                     await self._turno_subjefe(filas)
                 elif destino in self.empresas:
@@ -83,7 +92,7 @@ class Puente:
             self.buzon.marcar_hechos([f["id"] for f in filas])
 
     async def _turno_subjefe(self, filas):
-        prompt, _hay_jefe, saltos = componer_turno_subjefe(self.buzon, filas)
+        prompt, hay_jefe, saltos = componer_turno_subjefe(self.buzon, filas)
         modo_voz = self.ultimo_modo_voz
         for f in filas:
             if self.buzon.es_del_jefe(f):
@@ -94,7 +103,8 @@ class Puente:
         try:
             respuesta = await ejecutar_turno(
                 self.buzon, "subjefe", prompt, Config.DATA_DIR / "subjefe",
-                args_subjefe(self.empresas, saltos), Config.SUBJEFE_TIMEOUT,
+                # crear_sesion solo se habilita si en este turno hay un mensaje del jefe con firma válida.
+                args_subjefe(self.empresas, saltos, permitir_crear=hay_jefe), Config.SUBJEFE_TIMEOUT,
             )
         except Exception as e:
             logger.exception("Fallo del subjefe")
@@ -102,6 +112,7 @@ class Puente:
             return
         finally:
             escribiendo.cancel()
+            self.recargar_empresas()
 
         if respuesta and respuesta.strip() != SILENCIO:
             await responder_por_telegram(respuesta, modo_voz=modo_voz)
@@ -244,12 +255,12 @@ def main():
     if not shutil.which(Config.CLAUDE_BIN):
         raise SystemExit(f"No encuentro '{Config.CLAUDE_BIN}'. Instala Claude Code e inicia sesión.")
     if Config.TOPE_DIARIO_USD <= 0:
-        logger.warning("TOPE_DIARIO_USD es 0: no hay tope diario de gasto")
+        logger.info("TOPE_DIARIO_USD es 0: sin tope diario de gasto")
     try:
         puente = Puente()
     except ErrorEmpresas as e:
         raise SystemExit(str(e))
-    logger.info(f"Empresas: {', '.join(puente.empresas) or '(ninguna)'}")
+    logger.info(f"Sesiones: {', '.join(puente.empresas) or '(ninguna; el jefe puede pedir que se creen)'}")
 
     app = ApplicationBuilder().token(Config.TELEGRAM_TOKEN).post_init(_post_init).concurrent_updates(True).build()
     app.add_handler(CommandHandler("start", cmd_start))

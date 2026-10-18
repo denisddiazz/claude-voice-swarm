@@ -49,6 +49,13 @@ CREATE TABLE IF NOT EXISTS gastos (
     creado REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_gastos_creado ON gastos (creado);
+CREATE TABLE IF NOT EXISTS sesiones_registradas (
+    nombre TEXT PRIMARY KEY,
+    directorio TEXT NOT NULL,
+    descripcion TEXT NOT NULL DEFAULT '',
+    modelo TEXT,
+    creado REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS alertas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     origen TEXT NOT NULL,
@@ -189,6 +196,16 @@ class Buzon:
     def reiniciar_fallos_sesion(self, nombre: str):
         with self._con() as c:
             c.execute("UPDATE sesiones SET fallos = 0 WHERE nombre = ?", (nombre,))
+
+    # --- sesiones creadas con crear_sesion (persisten entre reinicios) ---
+    def registrar_sesion(self, nombre: str, directorio: str, descripcion: str, modelo: str | None):
+        with self._con() as c:
+            c.execute("INSERT INTO sesiones_registradas (nombre, directorio, descripcion, modelo, creado)"
+                      " VALUES (?, ?, ?, ?, ?)", (nombre, directorio, descripcion, modelo, time.time()))
+
+    def sesiones_registradas(self) -> list[sqlite3.Row]:
+        with self._con() as c:
+            return c.execute("SELECT * FROM sesiones_registradas ORDER BY creado").fetchall()
 
     # --- gasto ---
     def registrar_gasto(self, nombre: str, coste_usd: float):

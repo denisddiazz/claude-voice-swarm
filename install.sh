@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instalador para Linux (camino principal: Ubuntu en WSL2) y macOS.
+# Instalador para Linux, WSL2 y macOS (opción secundaria; el camino principal es install.ps1 en Windows).
 # Opciones por variable de entorno:
 #   PYTHON=python3.12   fuerza el intérprete
 #   TORCH_CPU=1         instala torch solo CPU (evita las ruedas CUDA, mucho más pesadas)
@@ -87,5 +87,5 @@ fi
 
 echo
 echo "== Listo =="
-echo "1. Revisa empresas.json (carpetas dedicadas, max_budget_usd)"
+echo "1. Revisa empresas.json (opcional) y los topes de gasto de .env"
 echo "2. Prueba con ./run.sh; como servicio, ver deploy/claude-voice-swarm.service y el README"

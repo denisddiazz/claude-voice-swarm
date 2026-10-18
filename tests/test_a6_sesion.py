@@ -9,7 +9,7 @@ from empresas import Empresa
 
 
 def _turno(buzon, tmp_path, nombre="x", timeout=30):
-    e = Empresa(nombre, "d", tmp_path / "trabajo", max_budget_usd=1)
+    e = Empresa(nombre, "d", tmp_path / "trabajo")
     return asyncio.run(sesiones.ejecutar_turno(buzon, nombre, "orden", e.directorio, sesiones.args_empresa(e), timeout))
 
 

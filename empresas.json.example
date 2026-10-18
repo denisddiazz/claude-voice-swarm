@@ -1,27 +1,12 @@
 {
   "codigo": {
-    "descripcion": "Lee y edita código en su carpeta de proyectos. No ejecuta comandos.",
-    "directorio": "~/empresas/codigo",
-    "modelo": "opus",
-    "permission_mode": "acceptEdits",
-    "restringida": true,
-    "allowed_tools": [],
-    "max_budget_usd": 5
-  },
-  "sistemas": {
-    "descripcion": "Estado del ordenador: disco, memoria, carga y servicios caídos (solo lectura).",
-    "directorio": "~/empresas/sistemas",
-    "modelo": "sonnet",
-    "permission_mode": "dontAsk",
-    "allowed_tools": ["Bash(df -h)", "Bash(free -h)", "Bash(uptime)", "Bash(systemctl --failed)"],
-    "max_budget_usd": 1
+    "descripcion": "Desarrollo de software: repositorios, programación, revisiones de código.",
+    "directorio": "~/proyectos"
   },
   "investigacion": {
     "descripcion": "Buscar información en internet y preparar informes.",
-    "directorio": "~/empresas/investigacion",
+    "directorio": "~/investigacion",
     "modelo": "opus",
-    "permission_mode": "acceptEdits",
-    "allowed_tools": ["WebSearch", "WebFetch"],
-    "max_budget_usd": 3
+    "max_budget_usd": 5
   }
 }
