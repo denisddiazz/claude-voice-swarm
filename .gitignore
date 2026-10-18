@@ -6,3 +6,5 @@ __pycache__/
 *.ogg
 datos/
 empresas.json
+.venv/
+.pytest_cache/
