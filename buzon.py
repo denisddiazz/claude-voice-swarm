@@ -207,6 +207,11 @@ class Buzon:
         with self._con() as c:
             return c.execute("SELECT * FROM sesiones_registradas ORDER BY creado").fetchall()
 
+    def borrar_sesion_registrada(self, nombre: str) -> bool:
+        """Quita la sesión del registro. No toca su carpeta. True si existía."""
+        with self._con() as c:
+            return c.execute("DELETE FROM sesiones_registradas WHERE nombre = ?", (nombre,)).rowcount > 0
+
     # --- gasto ---
     def registrar_gasto(self, nombre: str, coste_usd: float):
         with self._con() as c:

@@ -107,7 +107,7 @@ Todo es opcional y está desactivado por defecto (vacío o `0` = sin tope). Las 
 | `SUBJEFE_MAX_BUDGET_USD` | Gasto por turno del subjefe (`--max-budget-usd`) |
 | `EMPRESA_MAX_BUDGET_USD` | Gasto por turno de cada sesión que no fije su `max_budget_usd` |
 | `TOPE_DIARIO_USD` | Suma de todas las sesiones en el día local. Al alcanzarlo, las órdenes quedan en cola hasta el día siguiente y recibes un aviso |
-| `MAX_REBOTES` | Encargos encadenados subjefe → sesión → subjefe sin un mensaje tuyo; al pasarlo, `encargar` se niega y el subjefe te pregunta |
+| `MAX_REBOTES` | Encargos encadenados subjefe → sesión → subjefe sin un mensaje tuyo. Por defecto, 3; `0` = sin límite. Al llegar al límite, `encargar` se niega y el subjefe te pregunta antes de seguir |
 
 `/estado` muestra el gasto del día.
 
@@ -119,6 +119,7 @@ Todo es opcional y está desactivado por defecto (vacío o `0` = sin tope). Las 
 | `/estado` | Qué sesiones están trabajando, cuántos mensajes tienen en cola y gasto de hoy |
 | `/probar_alerta` | Envía una alerta de prueba a ntfy |
 | `/nueva_sesion <nombre>` | Olvida la conversación del subjefe o de una sesión; el siguiente turno empieza de cero |
+| `/borrar_sesion <nombre>` | Quita del registro una sesión creada con `crear_sesion`. No borra su carpeta. Las de `empresas.json` se quitan editando ese fichero |
 
 ## Cómo funciona por dentro
 
@@ -156,5 +157,5 @@ Usan un `claude` falso (`tests/claude_falso.py`); no llaman a la API ni a Telegr
 - Los mensajes del jefe que quedaron en cola antes de un reinicio llegan al subjefe como `no_verificado` (la clave de firma cambia en cada arranque); el subjefe debe pedirte confirmación, y en ese turno no puede crear sesiones.
 - El tope diario cuenta el coste que declara Claude Code al final de cada turno. Un turno cortado por timeout no declara coste, y varias sesiones en paralelo pueden pasar el tope.
 - Un fallo transitorio (sobrecarga, límite de uso, red) no se reintenta: el mensaje se da por procesado y el subjefe o tú recibís el error.
-- Para borrar una sesión creada con `crear_sesion` no hay comando: hay que quitar su fila de la tabla `sesiones_registradas` del buzón.
+- `/borrar_sesion` no borra la memoria de conversación de esa sesión: si después creas otra con el mismo nombre, reanuda la conversación anterior, si quieres empezar de cero, usa `/nueva_sesion` antes de borrarla.
 - Kokoro y Whisper se cargan la primera vez que hacen falta y se quedan en memoria (~1–2 GB según el modelo de Whisper) [ESTIMACIÓN SIN FUENTE].

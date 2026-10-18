@@ -203,7 +203,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(
             "Listo. Háblale al subjefe por voz o por texto.\n"
             "/estado: qué está haciendo cada uno y gasto de hoy\n/probar_alerta: prueba ntfy\n"
-            "/nueva_sesion <nombre>: olvida la conversación del subjefe o de una empresa"
+            "/nueva_sesion <nombre>: olvida la conversación del subjefe o de una empresa\n"
+            "/borrar_sesion <nombre>: quita una sesión creada con crear_sesion (no borra su carpeta)"
         )
 
 
@@ -234,6 +235,32 @@ async def cmd_nueva_sesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     puente.buzon.nueva_sesion(nombre)
     await update.effective_message.reply_text(f"La próxima vez, {nombre} empezará una conversación nueva.")
+
+
+async def cmd_borrar_sesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Quita una sesión creada con crear_sesion del registro. No borra su carpeta."""
+    if not await _autorizado(update):
+        return
+    nombre = (context.args or [""])[0]
+    if not nombre:
+        await update.effective_message.reply_text("Uso: /borrar_sesion <nombre>.")
+        return
+    e = puente.empresas.get(nombre)
+    if e is None:
+        await update.effective_message.reply_text(f"No existe la sesión '{nombre}'.")
+        return
+    if e.origen != "creada":
+        await update.effective_message.reply_text(
+            f"'{nombre}' está definida en empresas.json: edita ese fichero para quitarla.")
+        return
+    if nombre in puente.trabajando:
+        await update.effective_message.reply_text(f"{nombre} está trabajando; espera a que termine el turno.")
+        return
+    if not puente.buzon.borrar_sesion_registrada(nombre):
+        await update.effective_message.reply_text(f"No existe la sesión '{nombre}'.")
+        return
+    puente.recargar_empresas()
+    await update.effective_message.reply_text(f"Sesión '{nombre}' borrada. Su carpeta {e.directorio} no se ha tocado.")
 
 
 async def cmd_probar_alerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -267,6 +294,7 @@ def main():
     app.add_handler(CommandHandler("estado", cmd_estado))
     app.add_handler(CommandHandler("probar_alerta", cmd_probar_alerta))
     app.add_handler(CommandHandler("nueva_sesion", cmd_nueva_sesion))
+    app.add_handler(CommandHandler("borrar_sesion", cmd_borrar_sesion))
     # Solo mensajes nuevos: editar un mensaje no reenvía la orden (M7).
     solo_nuevos = filters.UpdateType.MESSAGE
     app.add_handler(MessageHandler(solo_nuevos & (filters.VOICE | filters.AUDIO), handle_voice))

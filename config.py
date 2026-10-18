@@ -38,7 +38,7 @@ class Config:
     SUBJEFE_MAX_BUDGET_USD = _float("SUBJEFE_MAX_BUDGET_USD", "0")  # por turno del subjefe
     EMPRESA_MAX_BUDGET_USD = _float("EMPRESA_MAX_BUDGET_USD", "0")  # por turno de cada sesión, si no fija el suyo
     TOPE_DIARIO_USD = _float("TOPE_DIARIO_USD", "0")  # suma de todas las sesiones en el día local
-    MAX_REBOTES = int(_float("MAX_REBOTES", "0"))  # encargos encadenados sin un mensaje del jefe
+    MAX_REBOTES = int(_float("MAX_REBOTES", "3"))  # encargos encadenados sin un mensaje del jefe; 0 = sin límite
     SESION_MAX_FALLOS = int(os.getenv("SESION_MAX_FALLOS", "3"))  # fallos seguidos antes de recrear la sesión
 
     # --- Telegram ---
