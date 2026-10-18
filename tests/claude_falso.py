@@ -74,6 +74,7 @@ if modo == "cerrar_tema":
     # Como si el subjefe llamara a la herramienta MCP cerrar_tema: mismo buzón que su --mcp-config.
     mcp_env = json.loads(Path(valor("--mcp-config")).read_text(encoding="utf-8"))["mcpServers"]["buzon"]["env"]
     os.environ.update(mcp_env)
+    os.environ["ROL"] = "externa"  # que config no cargue el .env real; el buzón sale de DATA_DIR
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     import herramientas  # noqa: E402
     from buzon import Buzon  # noqa: E402

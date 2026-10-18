@@ -22,6 +22,10 @@ def datos_temporales(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "BUZON_DB", tmp_path / "datos" / "buzon.sqlite3")
     monkeypatch.setattr(Config, "SUBJEFE_DIR", tmp_path / "subjefe")
     monkeypatch.setattr(Config, "CLAUDE_PROJECTS_DIR", tmp_path / "claude_projects")
+    # Valores por defecto, no los del .env real ni del entorno de quien ejecuta las pruebas.
+    for nombre, valor in {"SUBJEFE_MODEL": "haiku", "SUBJEFE_EFFORT": "medium", "TEMA_INACTIVIDAD_MIN": 120,
+                          "TEMA_MAX_KB": 600, "TEMA_ESTADO_MAX_CHARS": 1500}.items():
+        monkeypatch.setattr(Config, nombre, valor)
 
 
 @pytest.fixture

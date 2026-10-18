@@ -1,8 +1,11 @@
 """Temas del subjefe: una conversación por tema; al cerrarlo, la siguiente empieza con un resumen."""
 import asyncio
 import logging
+import os
+import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -245,6 +248,11 @@ def test_esfuerzo_valido_o_ignorado(valor, esperado):
     assert sesiones._esfuerzo(valor) == esperado
 
 
-def test_esfuerzo_por_defecto_medium():
-    assert Config.SUBJEFE_EFFORT == "medium"
+def test_esfuerzo_por_defecto_medium(tmp_path):
+    # Sin SUBJEFE_EFFORT en el entorno; ROL=externa hace que config no cargue el .env real.
+    env = {k: v for k, v in os.environ.items() if k != "SUBJEFE_EFFORT"}
+    env["ROL"] = "externa"
+    salida = subprocess.run([sys.executable, "-c", "from config import Config; print(Config.SUBJEFE_EFFORT)"],
+                            cwd=Path(sesiones.__file__).parent, env=env, capture_output=True, text=True, check=True)
+    assert salida.stdout.strip() == "medium"
     assert "--effort" in sesiones.args_subjefe({})
