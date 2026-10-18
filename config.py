@@ -6,11 +6,13 @@ from dotenv import dotenv_values, load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 
-# El servidor MCP de una empresa o de una sesión externa no necesita ningún secreto: no carga .env.
-if os.getenv("ROL") not in ("empresa", "externa"):
+# El servidor MCP de una empresa, de una sesión externa o de la ventana del jefe en el PC no
+# necesita ningún secreto: no carga .env (el puente o el registro le pasan las rutas resueltas).
+if os.getenv("ROL") not in ("empresa", "externa", "jefe_pc"):
     load_dotenv(ENV_FILE)
 
 _SUBJEFE_DIR_DEFECTO = r"C:\Cositas\Subjefe" if os.name == "nt" else "~/Subjefe"
+_JEFE_PC_DIR_DEFECTO = r"C:\Cositas\Jefe" if os.name == "nt" else "~/Jefe"
 
 
 def ruta_proyecto(valor, por_defecto: Path) -> Path:
@@ -50,6 +52,22 @@ class Config:
     TEMA_INACTIVIDAD_MIN = _float("TEMA_INACTIVIDAD_MIN", "120")
     TEMA_MAX_KB = _float("TEMA_MAX_KB", "600")
     TEMA_ESTADO_MAX_CHARS = int(_float("TEMA_ESTADO_MAX_CHARS", "1500"))  # estado inyectado al empezar
+
+    # --- Canal PC (ver README, "Canal PC") ---
+    # Sesión de la app de escritorio donde el jefe habla con el subjefe desde el PC. Su carpeta
+    # tiene un .mcp.json con ROL=jefe_pc; el título es el nombre con que aparece en ListAgents.
+    # JEFE_PC_TITULO vacío = canal PC desactivado (todo va a Telegram, como antes).
+    JEFE_PC_DIR = ruta_proyecto(os.getenv("JEFE_PC_DIR"), Path(_JEFE_PC_DIR_DEFECTO))
+    JEFE_PC_TITULO = os.getenv("JEFE_PC_TITULO", "Jefe — ventana del subjefe en el PC").strip()
+    # Minutos sin actividad en el PC (teclado o ratón; si no se puede medir, sin mensajes del jefe
+    # por el PC) tras los que el canal pasa solo al móvil. 0 = nunca por inactividad.
+    PC_INACTIVIDAD_MIN = _float("PC_INACTIVIDAD_MIN", "15")
+    # "entrada": teclado y ratón de Windows (GetLastInputInfo); "mensajes": solo los mensajes del
+    # jefe por el PC (por si algún programa simula entrada y el PC nunca parece inactivo).
+    PC_INACTIVIDAD_FUENTE = os.getenv("PC_INACTIVIDAD_FUENTE", "entrada").strip().lower()
+    RELE_PC_MODELO = os.getenv("RELE_PC_MODELO", "haiku")
+    RELE_PC_TIMEOUT = int(_float("RELE_PC_TIMEOUT", "120"))
+    RELE_PC_MAX_BUDGET_USD = _float("RELE_PC_MAX_BUDGET_USD", "0.05")  # por entrega; 0 = sin tope
 
     # --- Gasto (opcional; 0 = sin tope) ---
     SUBJEFE_MAX_BUDGET_USD = _float("SUBJEFE_MAX_BUDGET_USD", "0")  # por turno del subjefe

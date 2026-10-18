@@ -32,15 +32,15 @@ if (-Not (Get-Command claude -ErrorAction SilentlyContinue)) { throw "No encuent
 
 # Las rutas se resuelven como lo hace el puente (config.py lee .env). El servidor externo no
 # carga .env (no necesita secretos): se le pasan ya resueltas.
-$codigo = "import json; from config import Config; print(json.dumps([str(Config.DATA_DIR), str(Config.EMPRESAS_FILE), str(Config.SUBJEFE_DIR)]))"
+$codigo = "import json; from config import Config; print(json.dumps([str(Config.DATA_DIR), str(Config.EMPRESAS_FILE), str(Config.SUBJEFE_DIR), str(Config.JEFE_PC_DIR)]))"
 $rutas = (& $python -c $codigo) | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or $rutas.Count -ne 3) { throw "No se pudieron leer las rutas de config.py" }
+if ($LASTEXITCODE -ne 0 -or $rutas.Count -ne 4) { throw "No se pudieron leer las rutas de config.py" }
 $servidor = Join-Path $PSScriptRoot "mcp_server.py"
 
 Quitar-Servidor | Out-Null
 # --transport va entre los -e y el nombre: si el nombre sigue a -e, claude lo toma por otro KEY=valor.
 & claude mcp add --scope user `
-    -e "ROL=externa" -e "DATA_DIR=$($rutas[0])" -e "EMPRESAS_FILE=$($rutas[1])" -e "SUBJEFE_DIR=$($rutas[2])" `
+    -e "ROL=externa" -e "DATA_DIR=$($rutas[0])" -e "EMPRESAS_FILE=$($rutas[1])" -e "SUBJEFE_DIR=$($rutas[2])" -e "JEFE_PC_DIR=$($rutas[3])" `
     -e "PYTHONUTF8=1" --transport stdio $Nombre -- $python $servidor
 if ($LASTEXITCODE -ne 0) { throw "claude mcp add ha fallado (codigo $LASTEXITCODE)" }
 

@@ -3,6 +3,7 @@
 - ROL=subjefe -> encargar, crear_sesion, listar_sesiones, estado_empresas, alerta_urgente, cerrar_tema
 - ROL=empresa -> informar_al_subjefe
 - ROL=externa -> informar_al_subjefe para sesiones abiertas por el usuario (se dan de alta solas)
+- ROL=jefe_pc -> hablar_al_subjefe y cambiar_canal, solo en la sesión de JEFE_PC_DIR (el jefe en el PC)
 
 Nadie salvo el subjefe habla con el jefe, y solo a través del puente. Ningún rol
 puede escribir en el buzón con origen 'jefe'. El rol, el nombre y el contador de
@@ -64,7 +65,8 @@ if ROL == "subjefe":
             return (f"No enviada: ya se envió una alerta hace menos de {Config.ALERTA_INTERVALO_MIN} minutos. "
                     "Cuéntaselo al jefe en tu respuesta.")
         ok = await enviar_alerta_ntfy(mensaje, titulo=titulo)
-        buzon.registrar_alerta("subjefe", enviada=ok)
+        # El puente la copia además al PC si es el canal activo (con la respuesta de este turno).
+        buzon.registrar_alerta("subjefe", enviada=ok, mensaje=mensaje, titulo=titulo)
         return "Alerta enviada al móvil del jefe." if ok else "No se pudo enviar la alerta."
 
     @mcp.tool()
@@ -94,7 +96,9 @@ elif ROL == "empresa":
 elif ROL == "externa":
     # Registrado a nivel de usuario (registrar-mcp-usuario.ps1): lo cargan todas las sesiones
     # del usuario. En las que lanza el propio puente no ofrece nada: ya tienen mcp__buzon.
-    if os.getenv("CLAUDE_VOICE_SWARM_PUENTE") != "1":
+    # Tampoco en la ventana del jefe en el PC (JEFE_PC_DIR): no es una sesión de trabajo, no se da de alta.
+    if os.getenv("CLAUDE_VOICE_SWARM_PUENTE") != "1" and not herramientas.es_carpeta_jefe_pc(
+            os.getenv("CLAUDE_PROJECT_DIR") or os.getcwd()):
         import externas
         from empresas import ErrorEmpresas, cargar_todas
 
@@ -111,6 +115,25 @@ elif ROL == "externa":
                 empresas, error = None, str(e)
             return herramientas.informar_externo(buzon, empresas, error, cwd, sid, metodo, mensaje,
                                                  urgente, nombre)
+
+elif ROL == "jefe_pc":
+    # Lo carga C:\Cositas\Jefe\.mcp.json (ventana del jefe en el PC). Lo que escribe vale como del
+    # jefe solo si el proceso corre en JEFE_PC_DIR; el puente lo adopta y lo firma (buzon.tomar_pendientes).
+    # Límite: cualquier proceso local del usuario podría imitarlo, como con el resto del buzón.
+    def _cwd():
+        return os.getenv("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+    @mcp.tool()
+    async def hablar_al_subjefe(texto: str) -> str:
+        """Pasa al subjefe, literal, lo que ha escrito el jefe. La respuesta llegará a esta sesión
+        como mensaje de otra sesión. '/movil', '/pc' y '/canal' cambian o consultan el canal."""
+        return herramientas.hablar_al_subjefe(buzon, _cwd(), texto)
+
+    @mcp.tool()
+    async def cambiar_canal(canal: str = "") -> str:
+        """Canal por el que el subjefe entrega al jefe: 'movil' (Telegram) o 'pc' (esta sesión).
+        Vacío: solo dice cuál está activo."""
+        return herramientas.cambiar_canal(buzon, _cwd(), canal)
 
 else:
     raise SystemExit(f"ROL desconocido: {ROL!r}")

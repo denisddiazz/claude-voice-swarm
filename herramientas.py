@@ -3,15 +3,76 @@
 El origen de lo que se escribe lo fija el rol del proceso, que viene de la configuración
 que escribe el puente; nunca un argumento que controle el modelo.
 """
+import os
+import time
+from datetime import datetime
 from pathlib import Path
 
 from buzon import Buzon
+from config import Config
 from empresas import NOMBRE_VALIDO, RESERVADOS, Empresa, ErrorEmpresas, resolver_directorio, validar_nombre
 from externas import nombre_por_defecto
 
 
 def nombre_empresa_valido(nombre: str) -> bool:
     return bool(NOMBRE_VALIDO.match(nombre or "")) and nombre not in RESERVADOS
+
+
+# --- canal PC: la sesión de JEFE_PC_DIR es la ventana del jefe en el PC ---
+def es_carpeta_jefe_pc(cwd) -> bool:
+    try:
+        return os.path.normcase(str(Path(str(cwd)).resolve())) == os.path.normcase(str(Config.JEFE_PC_DIR))
+    except (OSError, ValueError):
+        return False
+
+
+NOMBRES_CANAL = {"movil": "móvil (Telegram)", "pc": "PC (ventana del jefe)"}
+_MOTIVOS_CANAL = {"inicio": "por defecto", "jefe": "el jefe escribió por Telegram", "jefe_pc": "el jefe escribió en el PC",
+                  "comando": "elegido por el jefe", "inactividad": "inactividad en el PC",
+                  "fallo_rele": "no se pudo entregar en el PC"}
+COMANDOS_CANAL = {"/movil": "movil", "/móvil": "movil", "/pc": "pc", "/canal": ""}
+
+
+def describir_canal(estado) -> str:
+    hora = datetime.fromtimestamp(estado["cambiado"]).strftime("%d/%m %H:%M")
+    motivo = _MOTIVOS_CANAL.get(estado["motivo"], estado["motivo"])
+    texto = f"Canal activo: {NOMBRES_CANAL.get(estado['activo'], estado['activo'])}, desde {hora} ({motivo})."
+    if estado["activo"] == "pc" and Config.PC_INACTIVIDAD_MIN > 0:
+        texto += f" Pasa al móvil tras {Config.PC_INACTIVIDAD_MIN:g} min sin actividad en el PC."
+    return texto
+
+
+def cambiar_canal(buzon: Buzon, cwd, canal: str) -> str:
+    """Herramienta del rol jefe_pc: fija ('movil' o 'pc') o consulta ('') el canal."""
+    if not es_carpeta_jefe_pc(cwd):
+        return f"No permitido: solo la sesión de {Config.JEFE_PC_DIR} puede cambiar el canal."
+    canal = (canal or "").strip().lower().lstrip("/").replace("ó", "o")
+    if canal not in ("", "movil", "pc"):
+        return "Canal desconocido: usa 'movil', 'pc' o vacío para consultarlo."
+    if canal:
+        ahora = time.time()
+        buzon.anotar_jefe("pc", ahora)  # lo entregado aquí hasta ahora, el jefe lo tiene delante
+        buzon.cambiar_canal(canal, "comando", ahora)
+    return describir_canal(buzon.estado_canal())
+
+
+def hablar_al_subjefe(buzon: Buzon, cwd, texto: str) -> str:
+    """Herramienta del rol jefe_pc: deja en el buzón lo que el jefe ha escrito en el PC.
+
+    Se inserta con origen 'jefe_pc' (este proceso no tiene la clave del puente); el puente lo firma
+    como del jefe al tomarlo. El canal pasa a PC en el acto."""
+    if not es_carpeta_jefe_pc(cwd):
+        return f"No entregado: esta herramienta solo vale en la sesión de {Config.JEFE_PC_DIR}."
+    texto = (texto or "").strip()
+    if not texto:
+        return "No entregado: el texto está vacío."
+    if texto.lower() in COMANDOS_CANAL:
+        return cambiar_canal(buzon, cwd, COMANDOS_CANAL[texto.lower()])
+    ahora = time.time()
+    buzon.cambiar_canal("pc", "jefe_pc", ahora)
+    buzon.anotar_jefe("pc", ahora)
+    buzon.enviar("jefe_pc", "subjefe", texto, modo_voz=False, canal="pc")
+    return "Entregado al subjefe. Su respuesta llegará a esta sesión."
 
 
 def encargar(buzon: Buzon, empresas: dict[str, Empresa] | None, error_carga: str | None,
@@ -106,6 +167,9 @@ def informar_externo(buzon: Buzon, empresas: dict[str, Empresa] | None, error_ca
     La sesión se identifica por su carpeta (cwd) y su conversación (session_id). El primer
     informe la da de alta con origen 'externa' para que `encargar` reanude esa conversación.
     Si la carpeta ya tiene una sesión externa y llama otra conversación, pasa a ser esta."""
+    if es_carpeta_jefe_pc(cwd):
+        return ("Aviso no entregado: esta es la ventana del jefe en el PC, no una sesión de trabajo. "
+                "Usa hablar_al_subjefe.")
     if empresas is None:
         return f"Aviso no entregado: no se pudo cargar la lista de sesiones ({error_carga})."
     try:

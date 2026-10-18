@@ -74,7 +74,29 @@ CREATE TABLE IF NOT EXISTS alertas (
     enviada INTEGER NOT NULL,
     creado REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS canal (            -- por dónde se entrega al jefe (una sola fila)
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    activo TEXT NOT NULL DEFAULT 'movil',     -- 'movil' (Telegram) o 'pc' (sesión de JEFE_PC_DIR)
+    motivo TEXT NOT NULL DEFAULT 'inicio',
+    cambiado REAL NOT NULL,
+    ultimo_movil REAL NOT NULL,               -- último mensaje o comando del jefe por Telegram
+    ultimo_pc REAL NOT NULL DEFAULT 0,        -- último mensaje del jefe por el PC
+    actividad_pc REAL NOT NULL DEFAULT 0,     -- última actividad conocida del jefe en el PC
+    al_dia_de TEXT,                           -- canal anterior con entregas que el jefe no ha visto
+    al_dia_desde REAL                         -- desde cuándo (lo anterior se da por visto)
+);
+CREATE TABLE IF NOT EXISTS salidas (          -- lo entregado al jefe, por canal
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    canal TEXT NOT NULL,
+    texto TEXT NOT NULL,
+    creado REAL NOT NULL,
+    recopilacion INTEGER NOT NULL DEFAULT 0,  -- entrega de lo no visto: no se vuelve a recopilar
+    coste_usd REAL                            -- coste del relé (solo PC)
+);
+CREATE INDEX IF NOT EXISTS idx_salidas_canal ON salidas (canal, creado);
 """
+
+CANALES = ("movil", "pc")
 
 # Columnas añadidas después de la primera versión (bases de datos ya creadas).
 _MIGRACIONES = [
@@ -85,6 +107,9 @@ _MIGRACIONES = [
     ("sesiones", "mtime_puente", "REAL"),      # mtime de la transcripción tras el último turno del puente
     ("sesiones_registradas", "origen", "TEXT NOT NULL DEFAULT 'creada'"),  # 'creada' o 'externa'
     ("sesiones_registradas", "session_id", "TEXT"),  # conversación existente (sesiones externas)
+    ("mensajes", "canal", "TEXT"),             # por dónde llegó un mensaje del jefe ('movil' o 'pc')
+    ("alertas", "mensaje", "TEXT"),            # texto de la alerta (se copia al PC si es el canal activo)
+    ("alertas", "titulo", "TEXT"),
 ]
 
 
@@ -123,15 +148,15 @@ class Buzon:
 
     # --- mensajes ---
     def enviar(self, origen: str, destino: str, texto: str, urgente: bool = False,
-               modo_voz: bool | None = None, saltos: int = 0) -> int:
+               modo_voz: bool | None = None, saltos: int = 0, canal: str | None = None) -> int:
         creado = time.time()
         firma = _firma(self.clave, origen, destino, texto, creado) if self.clave else None
         with self._con() as c:
             cur = c.execute(
-                "INSERT INTO mensajes (origen, destino, texto, urgente, modo_voz, creado, saltos, firma)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO mensajes (origen, destino, texto, urgente, modo_voz, creado, saltos, firma, canal)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (origen, destino, texto, int(urgente), None if modo_voz is None else int(modo_voz),
-                 creado, int(saltos), firma),
+                 creado, int(saltos), firma, canal),
             )
             return cur.lastrowid
 
@@ -150,6 +175,13 @@ class Buzon:
         """Marca como 'en_curso' y devuelve todos los pendientes de un destino (atómico)."""
         with self._con() as c:
             c.execute("BEGIN IMMEDIATE")
+            if self.clave and destino == "subjefe":
+                # Lo que el jefe escribe en el PC lo inserta el MCP de JEFE_PC_DIR (ROL=jefe_pc), que no
+                # tiene la clave: el puente lo adopta y lo firma como del jefe en la misma transacción.
+                for f in c.execute("SELECT id, texto, creado FROM mensajes WHERE destino = 'subjefe'"
+                                   " AND estado = 'pendiente' AND origen = 'jefe_pc'").fetchall():
+                    c.execute("UPDATE mensajes SET origen = 'jefe', canal = 'pc', firma = ? WHERE id = ?",
+                              (_firma(self.clave, "jefe", "subjefe", f["texto"], f["creado"]), f["id"]))
             filas = c.execute(
                 "SELECT * FROM mensajes WHERE destino = ? AND estado = 'pendiente' ORDER BY id", (destino,)
             ).fetchall()
@@ -351,7 +383,98 @@ class Buzon:
             fila = c.execute("SELECT MAX(creado) FROM alertas WHERE enviada = 1").fetchone()
         return fila[0] is None or time.time() - fila[0] >= intervalo_s
 
-    def registrar_alerta(self, origen: str, enviada: bool):
+    def registrar_alerta(self, origen: str, enviada: bool, mensaje: str | None = None, titulo: str | None = None):
         with self._con() as c:
-            c.execute("INSERT INTO alertas (origen, enviada, creado) VALUES (?, ?, ?)",
-                      (origen, int(enviada), time.time()))
+            c.execute("INSERT INTO alertas (origen, enviada, creado, mensaje, titulo) VALUES (?, ?, ?, ?, ?)",
+                      (origen, int(enviada), time.time(), mensaje, titulo))
+
+    def alertas_enviadas_desde(self, desde: float) -> list[sqlite3.Row]:
+        with self._con() as c:
+            return c.execute("SELECT * FROM alertas WHERE enviada = 1 AND creado >= ? ORDER BY id",
+                             (float(desde),)).fetchall()
+
+    # --- canal del jefe: móvil (Telegram) o PC (ver README, "Canal PC") ---
+    def _fila_canal(self, c, ahora: float):
+        # Al crearse, lo enviado antes por Telegram se da por visto.
+        c.execute("INSERT OR IGNORE INTO canal (id, cambiado, ultimo_movil) VALUES (1, ?, ?)", (ahora, ahora))
+        return c.execute("SELECT * FROM canal WHERE id = 1").fetchone()
+
+    def estado_canal(self, ahora: float | None = None) -> sqlite3.Row:
+        with self._con() as c:
+            return self._fila_canal(c, time.time() if ahora is None else ahora)
+
+    def anotar_jefe(self, canal: str, ahora: float | None = None):
+        """El jefe acaba de escribir por `canal`: lo enviado ahí hasta ahora lo ha visto."""
+        if canal not in CANALES:
+            raise ValueError(f"canal desconocido: {canal!r}")
+        ahora = time.time() if ahora is None else ahora
+        with self._con() as c:
+            self._fila_canal(c, ahora)
+            if canal == "movil":
+                c.execute("UPDATE canal SET ultimo_movil = MAX(ultimo_movil, ?) WHERE id = 1", (ahora,))
+            else:
+                c.execute("UPDATE canal SET ultimo_pc = MAX(ultimo_pc, ?), actividad_pc = MAX(actividad_pc, ?)"
+                          " WHERE id = 1", (ahora, ahora))
+
+    def anotar_actividad_pc(self, cuando: float):
+        """Actividad del jefe en el PC (teclado o ratón): lo entregado al PC antes, lo ha podido ver."""
+        with self._con() as c:
+            self._fila_canal(c, time.time())
+            c.execute("UPDATE canal SET actividad_pc = MAX(actividad_pc, ?) WHERE id = 1", (float(cuando),))
+
+    def cambiar_canal(self, canal: str, motivo: str, ahora: float | None = None) -> bool:
+        """Pone `canal` como activo. Si cambia, deja pendiente entregar en él lo que el jefe no vio en
+        el anterior: del PC, lo entregado desde su última actividad allí; del móvil, lo entregado desde
+        su último mensaje por Telegram. True si ha cambiado."""
+        if canal not in CANALES:
+            raise ValueError(f"canal desconocido: {canal!r}")
+        ahora = time.time() if ahora is None else ahora
+        with self._con() as c:
+            c.execute("BEGIN IMMEDIATE")
+            fila = self._fila_canal(c, ahora)
+            if fila["activo"] == canal:
+                c.execute("COMMIT")
+                return False
+            desde = fila["actividad_pc"] if fila["activo"] == "pc" else fila["ultimo_movil"]
+            # Al pasar al PC cuenta como actividad: el plazo de inactividad empieza ahora.
+            c.execute("UPDATE canal SET activo = ?, motivo = ?, cambiado = ?, al_dia_de = ?, al_dia_desde = ?,"
+                      " actividad_pc = CASE WHEN ? = 'pc' THEN MAX(actividad_pc, ?) ELSE actividad_pc END"
+                      " WHERE id = 1", (canal, motivo, ahora, fila["activo"], desde, canal, ahora))
+            c.execute("COMMIT")
+            return True
+
+    def tomar_no_visto(self, limite: int = 20) -> tuple[str, list[sqlite3.Row], int] | None:
+        """Si hay pendiente entregar en el canal activo lo no visto del anterior, lo devuelve
+        (canal anterior, filas de las más recientes `limite`, cuántas se han quedado fuera) y lo da
+        por entregado. Las recopilaciones anteriores no se vuelven a recopilar."""
+        with self._con() as c:
+            c.execute("BEGIN IMMEDIATE")
+            fila = self._fila_canal(c, time.time())
+            if not fila["al_dia_de"]:
+                c.execute("COMMIT")
+                return None
+            de, desde = fila["al_dia_de"], fila["al_dia_desde"] or 0
+            filas = c.execute("SELECT * FROM salidas WHERE canal = ? AND creado > ? AND recopilacion = 0"
+                              " ORDER BY id", (de, desde)).fetchall()
+            c.execute("UPDATE canal SET al_dia_de = NULL, al_dia_desde = NULL WHERE id = 1")
+            c.execute("COMMIT")
+        fuera = max(0, len(filas) - limite)
+        return de, filas[fuera:], fuera
+
+    def hay_no_visto(self) -> bool:
+        with self._con() as c:
+            return bool(self._fila_canal(c, time.time())["al_dia_de"])
+
+    def registrar_salida(self, canal: str, texto: str, recopilacion: bool = False,
+                         coste_usd: float | None = None, ahora: float | None = None) -> int:
+        with self._con() as c:
+            return c.execute("INSERT INTO salidas (canal, texto, creado, recopilacion, coste_usd)"
+                             " VALUES (?, ?, ?, ?, ?)",
+                             (canal, texto, time.time() if ahora is None else ahora, int(recopilacion),
+                              coste_usd)).lastrowid
+
+    def salidas(self, canal: str | None = None) -> list[sqlite3.Row]:
+        with self._con() as c:
+            if canal is None:
+                return c.execute("SELECT * FROM salidas ORDER BY id").fetchall()
+            return c.execute("SELECT * FROM salidas WHERE canal = ? ORDER BY id", (canal,)).fetchall()

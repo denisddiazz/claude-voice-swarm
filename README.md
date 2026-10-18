@@ -107,6 +107,17 @@ El subjefe no tiene una conversación eterna sino una por tema (lógica en `tema
 
 Si en un cierre forzado el subjefe no deja resumen, se guarda uno mínimo que conserva los pendientes anteriores. La conversación siguiente empieza de cero y recibe solo su `CLAUDE.md`, el protocolo y un estado de `TEMA_ESTADO_MAX_CHARS` caracteres (1500) como máximo: los pendientes abiertos, los temas cerrados recientes (fecha, tu encargo abreviado, a qué sesiones se encargó y su resumen; los más antiguos se recortan) y las sesiones disponibles. Así el subjefe sabe a qué se refiere un informe que llega sobre un tema ya cerrado. La primera vez, la conversación anterior a los temas se adopta como tema abierto y se cierra por estas mismas reglas. Modelo y esfuerzo del subjefe: `SUBJEFE_MODEL` (`haiku`) y `SUBJEFE_EFFORT` (`medium`, se pasa como `--effort`).
 
+### Canal PC
+
+Hablas con el subjefe por dos canales: **móvil** (Telegram) y **PC**, una sesión de la app de escritorio abierta en `JEFE_PC_DIR` (`C:\Cositas\Jefe`) cuyo título es `JEFE_PC_TITULO`. Su `.mcp.json` (lo escribe el puente al arrancar; plantilla de su `CLAUDE.md` en `plantillas/jefe`) carga `mcp_server.py` con `ROL=jefe_pc`, que solo ofrece `hablar_al_subjefe` y `cambiar_canal`; el MCP de usuario no se ofrece ni da de alta esa carpeta como sesión externa.
+
+- **Canal activo** (tabla `canal` del buzón, sobrevive a reinicios): el último por el que escribiste. Si el PC lleva `PC_INACTIVIDAD_MIN` minutos (15) sin teclado ni ratón (`GetLastInputInfo`; el puente corre en tu sesión interactiva), pasa al móvil. Con `PC_INACTIVIDAD_FUENTE=mensajes` cuenta solo tu último mensaje por el PC. `/pc`, `/movil` y `/canal` (en Telegram o en la ventana del PC) lo fuerzan o lo consultan.
+- **Al cambiar** se entrega en el nuevo canal, en un solo mensaje, lo que no viste en el anterior (tabla `salidas`): del PC, lo enviado desde tu última actividad allí; del móvil, lo enviado desde tu último mensaje por Telegram.
+- **Entrega al PC**: la decide el puente. Un relé `claude -p` (Haiku, `--effort low`, solo `ListAgents`/`SendMessage`/`ToolSearch`, sin MCP, sin settings de usuario, sin persistencia, con prompt de sistema propio, carpeta `datos/rele-pc`) llama a `SendMessage` con el texto. El puente comprueba en la salida `stream-json` que `SendMessage` fue a ese título, con el texto exacto y con `success`. Si no, va a Telegram con el aviso «No pude entregarlo en el PC» y el canal pasa al móvil. Lo de un mismo turno va en una sola entrega. Solo texto: la voz es solo de Telegram.
+- **Urgencias**: `alerta_urgente` suena siempre en el móvil (ntfy); si el canal es el PC, se copia también allí.
+- **Coste por entrega**: medido el 18/10/2026 con `total_cost_usd`: 0,0016 USD en una entrega fallida con cuatro llamadas a herramientas y 0,0010 USD en una llamada solo a `ListAgents`. Una entrega con éxito usa tres (`ToolSearch`, `SendMessage` y la respuesta): del orden de 0,0015 USD `[ESTIMACIÓN SIN FUENTE: no medida con éxito]`. Se anota en el log (`[rele-pc]`) y cuenta para `TOPE_DIARIO_USD`. Aparte, la sesión del PC gasta un turno de su modelo en mostrar cada mensaje `[ESTIMACIÓN SIN FUENTE]`.
+- **Límites**: `SendMessage` solo llega a sesiones vivas en `ListAgents`; la app no lista una sesión cerrada o descargada aunque exista, y entonces todo cae a Telegram. Lo que escribe el MCP `jefe_pc` vale como tuyo (el puente lo firma al tomarlo) solo si corre en `JEFE_PC_DIR`, pero cualquier proceso local de tu usuario podría imitarlo, igual que con el resto del buzón.
+
 ## Permisos
 
 **Los permisos se gestionan en cada carpeta**, como en cualquier sesión de Claude Code: `.claude/settings.json` y `.claude/settings.local.json` de la carpeta de la sesión, más tus settings de usuario (`~/.claude/settings.json`). El puente no los impone ni los valida. Por defecto no pasa `--permission-mode`, `--setting-sources` ni reglas de permisos propias; solo añade `--allowedTools mcp__buzon` para que la sesión pueda usar la herramienta del puente (`informar_al_subjefe`), y las sustituciones que pongas en `empresas.json`.
@@ -147,6 +158,7 @@ Todo es opcional y está desactivado por defecto (vacío o `0` = sin tope). Las 
 | `/nuevo_tema` | Cierra el tema del subjefe: le pide un resumen y el siguiente mensaje empieza una conversación nueva con él. Si el subjefe está en un turno, el cierre se hace antes del siguiente mensaje |
 | `/nueva_sesion <nombre>` | Olvida la conversación del subjefe o de una sesión; el siguiente turno empieza de cero (en el subjefe, cierra el tema sin resumen). No vale para las que reanudan una conversación existente (externas o con `session_id`) |
 | `/borrar_sesion <nombre>` | Quita del registro una sesión creada con `crear_sesion` o una externa. No borra su carpeta ni la conversación de una externa. Las de `empresas.json` se quitan editando ese fichero |
+| `/pc`, `/movil`, `/canal` | Fuerzan o consultan el canal por el que te llega lo del subjefe (ver «Canal PC») |
 
 ## Cómo funciona por dentro
 

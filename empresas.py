@@ -14,7 +14,7 @@ from pathlib import Path
 
 from config import BASE_DIR, Config
 
-RESERVADOS = {"jefe", "subjefe", "sistema"}
+RESERVADOS = {"jefe", "subjefe", "sistema", "jefe_pc"}  # jefe_pc: origen de lo que el jefe escribe en el PC
 NOMBRE_VALIDO = re.compile(r"^[a-z0-9_-]{1,40}$")
 MODOS_PERMISO = {"default", "acceptEdits", "dontAsk", "plan", "auto", "bypassPermissions"}
 SESSION_ID_VALIDO = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")

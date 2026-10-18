@@ -3,11 +3,14 @@ import asyncio
 import logging
 import secrets
 import shutil
+import time
 from datetime import date
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
+import herramientas
+import rele_pc
 import temas
 from buzon import Buzon
 from comunicaciones import responder_por_telegram, set_bot
@@ -15,7 +18,7 @@ from config import Config
 from empresas import ErrorEmpresas, cargar_todas
 from notificaciones import enviar_alerta_ntfy
 from sesiones import (SILENCIO, ErrorSesion, args_empresa, args_subjefe, componer_turno_subjefe, ejecutar_turno,
-                      migrar_subjefe, preparar_carpeta_subjefe)
+                      migrar_subjefe, preparar_carpeta_jefe_pc, preparar_carpeta_subjefe)
 from voice_engine import transcribir_bytes
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -28,12 +31,90 @@ class Puente:
         # Clave solo en memoria: firma los mensajes del jefe y del sistema (A5).
         self.buzon = Buzon(clave=secrets.token_bytes(32))
         preparar_carpeta_subjefe()
+        if Config.JEFE_PC_TITULO:
+            preparar_carpeta_jefe_pc()
         migrar_subjefe(self.buzon)
         self.empresas = cargar_todas(self.buzon)
         self.trabajando: dict[str, asyncio.Task] = {}
         self.ultimo_modo_voz = False
         self.bot = None
         self._tope_avisado: date | None = None
+        self._entrega = asyncio.Lock()   # una entrega al jefe a la vez (el canal no cambia a mitad)
+        self._ultima_vigilancia = 0.0
+
+    # --- entregas al jefe: móvil (Telegram) o PC (ver README, "Canal PC") ---
+    @staticmethod
+    def canal_pc_configurado() -> bool:
+        return bool(Config.JEFE_PC_TITULO)
+
+    def canal_activo(self) -> str:
+        return self.buzon.estado_canal()["activo"] if self.canal_pc_configurado() else "movil"
+
+    async def al_jefe(self, partes: list[str], modo_voz: bool = False, urgencias: list[str] = ()):
+        """Entrega al jefe por el canal activo. Antepone lo que no vio en el canal anterior, si hay un
+        cambio pendiente. En el PC todo va en una sola entrega de texto (un relé por turno); la voz es
+        solo de Telegram. Las urgencias ya han sonado en el móvil (ntfy): se copian solo al PC."""
+        partes = [p for p in partes if p and p.strip()]
+        async with self._entrega:
+            no_visto = self.buzon.tomar_no_visto()
+            recopilacion = rele_pc.componer_no_visto(*no_visto) if no_visto else ""
+            if self.canal_activo() == "pc":
+                bloques = [b for b in (recopilacion, *urgencias, *partes) if b]
+                if not bloques:
+                    return
+                r = await rele_pc.entregar(rele_pc.SEPARADOR.join(bloques))
+                if r.coste_usd > 0:
+                    self.buzon.registrar_gasto("rele-pc", r.coste_usd)
+                logger.info(f"[rele-pc] entrega {'ok' if r.ok else 'fallida'}: {len(bloques)} bloques, "
+                            f"{sum(map(len, bloques))} caracteres, {r.segundos:.1f}s, coste {r.coste_usd:.4f} USD"
+                            f"{'' if r.ok else '; ' + r.motivo}")
+                if r.ok:
+                    if recopilacion:
+                        self.buzon.registrar_salida("pc", recopilacion, recopilacion=True)
+                    for i, b in enumerate([*urgencias, *partes]):
+                        self.buzon.registrar_salida("pc", b, coste_usd=r.coste_usd if i == 0 else None)
+                    return
+                # No llegó: pasa al móvil, que recibe lo no visto en el PC más lo de ahora con un aviso.
+                # La recopilación que venía del móvil no se repite allí.
+                self.buzon.cambiar_canal("movil", "fallo_rele")
+                no_visto = self.buzon.tomar_no_visto()
+                recopilacion = rele_pc.componer_no_visto(*no_visto) if no_visto else ""
+                aviso = f"(No pude entregarlo en el PC: {r.motivo}. Paso al móvil; /pc para volver.)"
+                partes = [f"{aviso}\n\n{partes[0]}" if partes else aviso, *partes[1:]]
+                modo_voz = False
+            if recopilacion:
+                await responder_por_telegram(recopilacion, modo_voz=False)
+                self.buzon.registrar_salida("movil", recopilacion, recopilacion=True)
+            for p in partes:
+                await responder_por_telegram(p, modo_voz=modo_voz)
+                self.buzon.registrar_salida("movil", p)
+
+    def jefe_por_telegram(self):
+        """El jefe ha escrito por Telegram: el canal pasa al móvil."""
+        ahora = time.time()
+        if self.canal_pc_configurado() and self.buzon.cambiar_canal("movil", "jefe", ahora):
+            logger.info("[canal] pasa al móvil: el jefe ha escrito por Telegram")
+        self.buzon.anotar_jefe("movil", ahora)
+
+    async def vigilar_canal(self, ahora: float | None = None):
+        """Cada pocos segundos: anota la actividad en el PC, pasa al móvil por inactividad y entrega lo
+        no visto si nadie más lo va a entregar (si hay un turno del subjefe, va con su respuesta)."""
+        if not self.canal_pc_configurado():
+            return
+        ahora = time.time() if ahora is None else ahora
+        inactivo = rele_pc.segundos_inactivo() if Config.PC_INACTIVIDAD_FUENTE != "mensajes" else None
+        if inactivo is not None:
+            self.buzon.anotar_actividad_pc(ahora - inactivo)
+        estado = self.buzon.estado_canal()
+        if estado["activo"] == "pc" and Config.PC_INACTIVIDAD_MIN > 0:
+            # Sin medida de entrada, cuenta el último mensaje del jefe por el PC (o el paso al PC).
+            if ahora - estado["actividad_pc"] >= Config.PC_INACTIVIDAD_MIN * 60:
+                self.buzon.cambiar_canal("movil", "inactividad", ahora)
+                logger.info(f"[canal] pasa al móvil: {Config.PC_INACTIVIDAD_MIN:g} min sin actividad en el PC"
+                            f" ({'entrada de Windows' if inactivo is not None else 'mensajes del jefe'})")
+        if (self.buzon.hay_no_visto() and "subjefe" not in self.trabajando
+                and "subjefe" not in self.buzon.destinos_pendientes()):
+            await self.al_jefe([])
 
     def recargar_empresas(self):
         """Recoge las sesiones creadas con crear_sesion. Si empresas.json se ha roto, se mantiene la lista."""
@@ -51,10 +132,10 @@ class Puente:
             return
         self._tope_avisado = date.today()
         try:
-            await responder_por_telegram(
+            await self.al_jefe([
                 f"Se ha alcanzado el tope diario de gasto ({Config.TOPE_DIARIO_USD} USD; "
                 f"gastado hoy {self.buzon.gasto_hoy():.2f}). Las órdenes quedan en cola hasta mañana "
-                "o hasta que subas TOPE_DIARIO_USD y reinicies.", modo_voz=False)
+                "o hasta que subas TOPE_DIARIO_USD y reinicies."])
         except Exception:
             logger.exception("No se pudo avisar del tope diario")
 
@@ -63,8 +144,13 @@ class Puente:
         n = self.buzon.reiniciar_en_curso()
         if n:
             logger.info(f"{n} mensajes que quedaron a medias vuelven a la cola")
+        vigilancia: asyncio.Task | None = None
         while True:
             try:
+                # Canal: cada 15 s, en una tarea aparte (una entrega por el relé tarda segundos).
+                if (vigilancia is None or vigilancia.done()) and time.time() - self._ultima_vigilancia >= 15:
+                    self._ultima_vigilancia = time.time()
+                    vigilancia = asyncio.create_task(self._vigilar_seguro())
                 destinos = self.buzon.destinos_pendientes()
                 if destinos and self.presupuesto_agotado():
                     await self._avisar_tope()
@@ -77,6 +163,12 @@ class Puente:
             except Exception:
                 logger.exception("Error en el despachador; se reintenta")
             await asyncio.sleep(1)
+
+    async def _vigilar_seguro(self):
+        try:
+            await self.vigilar_canal()
+        except Exception:
+            logger.exception("Error vigilando el canal del jefe")
 
     async def _trabajar(self, destino: str):
         # Un único turno a la vez por sesión; lo que llegue mientras tanto va en el siguiente.
@@ -104,6 +196,7 @@ class Puente:
                 modo_voz = self.ultimo_modo_voz = bool(f["modo_voz"])
         logger.info(f"[subjefe] turno con {len(filas)} mensajes (saltos={saltos})")
 
+        inicio = time.time()
         escribiendo = asyncio.create_task(self._indicador(modo_voz))
         try:
             # Un tema = una conversación: cierra el anterior si toca y, si la conversación es nueva,
@@ -117,7 +210,7 @@ class Puente:
             )
         except Exception as e:
             logger.exception("Fallo del subjefe")
-            await responder_por_telegram(f"El subjefe ha fallado: {e}", modo_voz=False)
+            await self.al_jefe([f"El subjefe ha fallado: {e}"], urgencias=self._urgencias_desde(inicio))
             return
         finally:
             escribiendo.cancel()
@@ -126,8 +219,14 @@ class Puente:
         reenviados = temas.tras_turno(self.buzon, filas, tema_id, tema_nuevo)
         if reenviados:
             logger.info(f"[subjefe] asunto nuevo: {reenviados} mensajes del jefe pasan a la sesión nueva")
-        if respuesta and respuesta.strip() != SILENCIO:
-            await responder_por_telegram(respuesta, modo_voz=modo_voz)
+        partes = [respuesta] if respuesta and respuesta.strip() != SILENCIO else []
+        # También sin respuesta: puede quedar lo no visto o una alerta que copiar al PC.
+        await self.al_jefe(partes, modo_voz=modo_voz, urgencias=self._urgencias_desde(inicio))
+
+    def _urgencias_desde(self, inicio: float) -> list[str]:
+        """Alertas que el subjefe hizo sonar en el móvil (ntfy) durante el turno."""
+        return [f"[URGENTE] {a['titulo'] or 'Aviso'}: {a['mensaje']}"
+                for a in self.buzon.alertas_enviadas_desde(inicio) if a["mensaje"]]
 
     async def cerrar_tema(self, motivo: str) -> str:
         return await temas.cerrar_forzado(self.buzon, self.empresas, motivo)
@@ -153,6 +252,9 @@ class Puente:
         if self.bot is None:
             return
         while True:
+            if self.canal_activo() == "pc":  # el jefe está en el PC: nada en Telegram
+                await asyncio.sleep(4.5)
+                continue
             try:
                 await self.bot.send_chat_action(Config.AUTHORIZED_CHAT_ID, "record_voice" if modo_voz else "typing")
             except Exception:
@@ -180,7 +282,8 @@ async def _autorizado(update: Update) -> bool:
 
 async def _al_subjefe(update: Update, texto: str, modo_voz: bool):
     puente.ultimo_modo_voz = modo_voz
-    puente.buzon.enviar("jefe", "subjefe", texto, modo_voz=modo_voz)
+    puente.jefe_por_telegram()
+    puente.buzon.enviar("jefe", "subjefe", texto, modo_voz=modo_voz, canal="movil")
     try:
         await update.effective_message.set_reaction(reaction="👀")
     except Exception:
@@ -221,8 +324,36 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/nuevo_tema: cierra el tema del subjefe con un resumen y empieza otro\n"
             "/nueva_sesion <nombre>: olvida la conversación del subjefe o de una empresa\n"
             "/borrar_sesion <nombre>: quita una sesión creada con crear_sesion o una externa "
-            "(no borra su carpeta ni, si es externa, su conversación)"
+            "(no borra su carpeta ni, si es externa, su conversación)\n"
+            "/pc, /movil: por dónde te llega lo del subjefe; /canal: cuál está activo"
         )
+
+
+async def _cmd_canal(update: Update, canal: str):
+    """/movil, /pc y /canal desde Telegram. Escribir aquí cuenta como haber visto lo enviado aquí."""
+    if not await _autorizado(update):
+        return
+    if not puente.canal_pc_configurado():
+        await update.effective_message.reply_text("El canal PC está desactivado (JEFE_PC_TITULO vacío): "
+                                                  "todo llega por Telegram.")
+        return
+    ahora = time.time()
+    puente.buzon.anotar_jefe("movil", ahora)
+    if canal and puente.buzon.cambiar_canal(canal, "comando", ahora):
+        logger.info(f"[canal] pasa a {canal} por comando desde Telegram")
+    await update.effective_message.reply_text(herramientas.describir_canal(puente.buzon.estado_canal()))
+
+
+async def cmd_movil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _cmd_canal(update, "movil")
+
+
+async def cmd_pc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _cmd_canal(update, "pc")
+
+
+async def cmd_canal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _cmd_canal(update, "")
 
 
 async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,6 +367,8 @@ async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lineas.append(f"{nombre}: {situacion}, {e.get('pendiente', 0)} en cola")
     tope = f" de {Config.TOPE_DIARIO_USD:.2f}" if Config.TOPE_DIARIO_USD > 0 else " (sin tope)"
     lineas.append(f"Gasto de hoy: {puente.buzon.gasto_hoy():.2f} USD{tope}")
+    if puente.canal_pc_configurado():
+        lineas.append(herramientas.describir_canal(puente.buzon.estado_canal()))
     await update.effective_message.reply_text("\n".join(lineas))
 
 
@@ -356,6 +489,9 @@ def main():
     app.add_handler(CommandHandler("nueva_sesion", cmd_nueva_sesion))
     app.add_handler(CommandHandler("nuevo_tema", cmd_nuevo_tema))
     app.add_handler(CommandHandler("borrar_sesion", cmd_borrar_sesion))
+    app.add_handler(CommandHandler("movil", cmd_movil))
+    app.add_handler(CommandHandler("pc", cmd_pc))
+    app.add_handler(CommandHandler("canal", cmd_canal))
     # Solo mensajes nuevos: editar un mensaje no reenvía la orden (M7).
     solo_nuevos = filters.UpdateType.MESSAGE
     app.add_handler(MessageHandler(solo_nuevos & (filters.VOICE | filters.AUDIO), handle_voice))

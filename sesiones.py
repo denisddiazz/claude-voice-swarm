@@ -121,7 +121,7 @@ def componer_turno_subjefe(buzon: Buzon, filas, nonce: str | None = None) -> tup
             saltos = max(saltos, int(f["saltos"] or 0))
             if f["origen"] == "sistema" and buzon.firmado(f):
                 origen = "sistema"
-            elif f["origen"] in ("jefe", "sistema", "subjefe"):
+            elif f["origen"] in ("jefe", "sistema", "subjefe", "jefe_pc"):
                 origen = "no_verificado"
             else:
                 origen = f"empresa:{f['origen']}"
@@ -207,6 +207,38 @@ def preparar_carpeta_subjefe(directorio: Path | None = None) -> Path:
     if not (d / ".claude" / "skills").exists():
         logger.warning(f"{d}\\.claude\\skills no existe: el subjefe no tendrá sus skills "
                        "(ejecuta C:\\Cositas\\Skills\\instalar.ps1)")
+    return d
+
+
+PLANTILLA_CLAUDE_JEFE_PC = BASE_DIR / "plantillas" / "jefe" / "CLAUDE.md"
+MCP_JEFE_PC = "jefe"  # nombre del servidor en el .mcp.json: herramientas mcp__jefe__*
+
+
+def preparar_carpeta_jefe_pc(directorio: Path | None = None) -> Path:
+    """Carpeta de la ventana del jefe en el PC: CLAUDE.md de la plantilla si no tiene, y en su
+    .mcp.json la entrada del buzón con ROL=jefe_pc (se reescribe solo esa entrada si ha cambiado)."""
+    d = Path(directorio or Config.JEFE_PC_DIR)
+    d.mkdir(parents=True, exist_ok=True)
+    if not (d / "CLAUDE.md").exists():
+        shutil.copyfile(PLANTILLA_CLAUDE_JEFE_PC, d / "CLAUDE.md")
+        logger.info(f"Creado {d / 'CLAUDE.md'} a partir de la plantilla")
+    entrada = {
+        "command": sys.executable,
+        "args": [str(BASE_DIR / "mcp_server.py")],
+        "env": {"ROL": "jefe_pc", "DATA_DIR": str(Config.DATA_DIR), "EMPRESAS_FILE": str(Config.EMPRESAS_FILE),
+                "JEFE_PC_DIR": str(d.resolve()), "PYTHONUTF8": "1"},
+    }
+    ruta = d / ".mcp.json"
+    try:
+        conf = json.loads(ruta.read_text(encoding="utf-8")) if ruta.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        logger.warning(f"{ruta} no es JSON válido: no se toca; la ventana del jefe no podrá hablar al subjefe")
+        return d
+    servidores = conf.setdefault("mcpServers", {})
+    if servidores.get(MCP_JEFE_PC) != entrada:
+        servidores[MCP_JEFE_PC] = entrada
+        ruta.write_text(json.dumps(conf, indent=2, ensure_ascii=False), encoding="utf-8")
+        logger.info(f"Actualizado {ruta}: abre de nuevo la sesión del jefe en el PC para cargarlo")
     return d
 
 
