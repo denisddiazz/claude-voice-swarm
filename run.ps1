@@ -8,13 +8,15 @@
 param([switch]$Log)
 Set-Location $PSScriptRoot
 $env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 $py = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 if (-Not (Test-Path $py)) { throw "No existe .venv. Ejecuta antes .\install.ps1" }
 New-Item -ItemType Directory -Force "datos" | Out-Null
 $logFile = Join-Path $PSScriptRoot "datos\puente.log"
 
 function Escribir([string]$texto, [string]$color = "Yellow") {
-    if ($Log) { Add-Content -Path $logFile -Value $texto -Encoding UTF8 } else { Write-Host $texto -ForegroundColor $color }
+    # UTF-8 sin BOM, sin Add-Content: en Windows PowerShell 5.1 "-Encoding UTF8" mete BOM y mezcla codificaciones.
+    if ($Log) { [System.IO.File]::AppendAllText($logFile, $texto + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false)) } else { Write-Host $texto -ForegroundColor $color }
 }
 
 # Procesos de ESTE repo: el python del venv con main.py, o un run.ps1 de este directorio.
