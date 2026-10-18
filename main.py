@@ -17,8 +17,8 @@ from comunicaciones import responder_por_telegram, set_bot
 from config import Config
 from empresas import ErrorEmpresas, cargar_todas
 from notificaciones import enviar_alerta_ntfy
-from sesiones import (SILENCIO, ErrorSesion, args_empresa, args_subjefe, componer_turno_subjefe, ejecutar_turno,
-                      migrar_subjefe, preparar_carpeta_jefe_pc, preparar_carpeta_subjefe)
+from sesiones import (SILENCIO, ErrorSesion, args_empresa, args_subjefe, componer_para_pc, componer_turno_subjefe,
+                      ejecutar_turno, migrar_subjefe, preparar_carpeta_subjefe, preparar_carpeta_subjefe_pc)
 from voice_engine import transcribir_bytes
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -31,8 +31,8 @@ class Puente:
         # Clave solo en memoria: firma los mensajes del jefe y del sistema (A5).
         self.buzon = Buzon(clave=secrets.token_bytes(32))
         preparar_carpeta_subjefe()
-        if Config.JEFE_PC_TITULO:
-            preparar_carpeta_jefe_pc()
+        if Config.SUBJEFE_PC_TITULO:
+            preparar_carpeta_subjefe_pc()
         migrar_subjefe(self.buzon)
         self.empresas = cargar_todas(self.buzon)
         self.trabajando: dict[str, asyncio.Task] = {}
@@ -41,47 +41,61 @@ class Puente:
         self._tope_avisado: date | None = None
         self._entrega = asyncio.Lock()   # una entrega al jefe a la vez (el canal no cambia a mitad)
         self._ultima_vigilancia = 0.0
+        self._aviso_fallo_pc = ""        # se antepone a la próxima entrega por Telegram
 
-    # --- entregas al jefe: móvil (Telegram) o PC (ver README, "Canal PC") ---
+    # --- canal del jefe: móvil (Telegram) o PC (sesión Subjefe de la app; ver README, "Canal PC") ---
     @staticmethod
     def canal_pc_configurado() -> bool:
-        return bool(Config.JEFE_PC_TITULO)
+        return bool(Config.SUBJEFE_PC_TITULO)
 
     def canal_activo(self) -> str:
         return self.buzon.estado_canal()["activo"] if self.canal_pc_configurado() else "movil"
 
+    async def _rele(self, texto: str, que: str) -> rele_pc.Resultado:
+        """Mete `texto` en la sesión Subjefe de la app. Si no llega, el canal pasa al móvil."""
+        r = await rele_pc.entregar(texto)
+        if r.coste_usd > 0:
+            self.buzon.registrar_gasto("rele-pc", r.coste_usd)
+        logger.info(f"[rele-pc] {que}: {'entregado' if r.ok else 'NO entregado'}, {len(texto)} caracteres, "
+                    f"{r.segundos:.1f}s, coste {r.coste_usd:.4f} USD{'' if r.ok else '; ' + r.motivo}")
+        if not r.ok:
+            self.buzon.cambiar_canal("movil", "fallo_rele")
+            self._aviso_fallo_pc = f"(No pude entregarlo en el PC: {r.motivo}. Paso al móvil; /pc para volver.)"
+        return r
+
+    async def al_pc(self, filas) -> bool:
+        """Canal PC: lo que llega para el subjefe (informes, avisos) va a la sesión Subjefe de la app,
+        que es el subjefe, en vez de a un turno headless. True si llegó."""
+        texto, saltos = componer_para_pc(self.buzon, filas)
+        async with self._entrega:
+            r = await self._rele(texto, f"{len(filas)} mensajes para el subjefe")
+        if r.ok:
+            self.buzon.marcar_via_pc([f["id"] for f in filas])
+            self.buzon.fijar_saltos_pc(saltos, maximo=True)  # límite de encargos encadenados sin el jefe
+        return r.ok
+
     async def al_jefe(self, partes: list[str], modo_voz: bool = False, urgencias: list[str] = ()):
-        """Entrega al jefe por el canal activo. Antepone lo que no vio en el canal anterior, si hay un
-        cambio pendiente. En el PC todo va en una sola entrega de texto (un relé por turno); la voz es
-        solo de Telegram. Las urgencias ya han sonado en el móvil (ntfy): se copian solo al PC."""
+        """Entrega al jefe lo que produce el puente o un turno headless. En el móvil: por Telegram, antes
+        lo que el subjefe le dijo en el PC y no vio (si acaba de dejar el PC). En el PC (un turno que
+        empezó antes del cambio, un aviso del puente): a la sesión Subjefe, en una sola entrega de
+        texto. La voz es solo de Telegram. Las urgencias ya sonaron en el móvil (ntfy): solo se copian al PC."""
         partes = [p for p in partes if p and p.strip()]
         async with self._entrega:
-            no_visto = self.buzon.tomar_no_visto()
-            recopilacion = rele_pc.componer_no_visto(*no_visto) if no_visto else ""
             if self.canal_activo() == "pc":
-                bloques = [b for b in (recopilacion, *urgencias, *partes) if b]
+                bloques = [*urgencias, *partes]
                 if not bloques:
                     return
-                r = await rele_pc.entregar(rele_pc.SEPARADOR.join(bloques))
-                if r.coste_usd > 0:
-                    self.buzon.registrar_gasto("rele-pc", r.coste_usd)
-                logger.info(f"[rele-pc] entrega {'ok' if r.ok else 'fallida'}: {len(bloques)} bloques, "
-                            f"{sum(map(len, bloques))} caracteres, {r.segundos:.1f}s, coste {r.coste_usd:.4f} USD"
-                            f"{'' if r.ok else '; ' + r.motivo}")
-                if r.ok:
-                    if recopilacion:
-                        self.buzon.registrar_salida("pc", recopilacion, recopilacion=True)
-                    for i, b in enumerate([*urgencias, *partes]):
-                        self.buzon.registrar_salida("pc", b, coste_usd=r.coste_usd if i == 0 else None)
+                texto = ("[Puente claude-voice-swarm] Para el jefe; muéstraselo tal cual (lo dijiste por el móvil "
+                         "o es un aviso del puente):\n\n" + rele_pc.SEPARADOR.join(bloques))
+                if (await self._rele(texto, "aviso para el jefe")).ok:
                     return
-                # No llegó: pasa al móvil, que recibe lo no visto en el PC más lo de ahora con un aviso.
-                # La recopilación que venía del móvil no se repite allí.
-                self.buzon.cambiar_canal("movil", "fallo_rele")
-                no_visto = self.buzon.tomar_no_visto()
-                recopilacion = rele_pc.componer_no_visto(*no_visto) if no_visto else ""
-                aviso = f"(No pude entregarlo en el PC: {r.motivo}. Paso al móvil; /pc para volver.)"
+                modo_voz = False
+            aviso, self._aviso_fallo_pc = self._aviso_fallo_pc, ""
+            if aviso:
                 partes = [f"{aviso}\n\n{partes[0]}" if partes else aviso, *partes[1:]]
                 modo_voz = False
+            no_visto = self.buzon.tomar_no_visto()
+            recopilacion = rele_pc.componer_no_visto_pc(no_visto[1], no_visto[0]) if no_visto else ""
             if recopilacion:
                 await responder_por_telegram(recopilacion, modo_voz=False)
                 self.buzon.registrar_salida("movil", recopilacion, recopilacion=True)
@@ -177,7 +191,13 @@ class Puente:
                 if destino != "subjefe" and destino not in self.empresas:
                     self.recargar_empresas()  # puede ser una sesión recién creada
                 if destino == "subjefe":
-                    await self._turno_subjefe(filas)
+                    # Canal PC: lo trata el subjefe de la app. Un mensaje del jefe (Telegram) ya habrá
+                    # pasado el canal al móvil; si aun así hay uno, va al headless.
+                    if (self.canal_activo() == "pc" and not any(self.buzon.es_del_jefe(f) for f in filas)
+                            and await self.al_pc(filas)):
+                        pass
+                    else:
+                        await self._turno_subjefe(filas)
                 elif destino in self.empresas:
                     await self._turno_empresa(destino, filas)
                 else:
@@ -334,7 +354,7 @@ async def _cmd_canal(update: Update, canal: str):
     if not await _autorizado(update):
         return
     if not puente.canal_pc_configurado():
-        await update.effective_message.reply_text("El canal PC está desactivado (JEFE_PC_TITULO vacío): "
+        await update.effective_message.reply_text("El canal PC está desactivado (SUBJEFE_PC_TITULO vacío): "
                                                   "todo llega por Telegram.")
         return
     ahora = time.time()

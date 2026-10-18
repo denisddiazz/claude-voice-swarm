@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS alertas (
 );
 CREATE TABLE IF NOT EXISTS canal (            -- por dónde se entrega al jefe (una sola fila)
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    activo TEXT NOT NULL DEFAULT 'movil',     -- 'movil' (Telegram) o 'pc' (sesión de JEFE_PC_DIR)
+    activo TEXT NOT NULL DEFAULT 'movil',     -- 'movil' (Telegram) o 'pc' (sesión de la app en SUBJEFE_DIR)
     motivo TEXT NOT NULL DEFAULT 'inicio',
     cambiado REAL NOT NULL,
     ultimo_movil REAL NOT NULL,               -- último mensaje o comando del jefe por Telegram
@@ -110,6 +110,14 @@ _MIGRACIONES = [
     ("mensajes", "canal", "TEXT"),             # por dónde llegó un mensaje del jefe ('movil' o 'pc')
     ("alertas", "mensaje", "TEXT"),            # texto de la alerta (se copia al PC si es el canal activo)
     ("alertas", "titulo", "TEXT"),
+    ("mensajes", "via", "TEXT"),    # 'pc': lo vio el subjefe del PC (relé o hook), no el headless
+    ("sesiones", "fork_de", "TEXT"),           # conversación del PC que el próximo turno continúa con --fork-session
+    ("canal", "pc_session_id", "TEXT"),        # conversación de la sesión del subjefe en la app (la da el hook)
+    ("canal", "pc_transcript", "TEXT"),
+    ("canal", "pc_visto", "REAL"),             # última vez que el hook puso al día al subjefe del PC
+    ("canal", "pc_msg_id", "INTEGER NOT NULL DEFAULT 0"),     # mensajes al subjefe ya contados al PC
+    ("canal", "pc_salida_id", "INTEGER NOT NULL DEFAULT 0"),  # salidas por Telegram ya contadas al PC
+    ("canal", "saltos_pc", "INTEGER NOT NULL DEFAULT 0"),     # encargos encadenados sin el jefe, en el PC
 ]
 
 
@@ -175,13 +183,6 @@ class Buzon:
         """Marca como 'en_curso' y devuelve todos los pendientes de un destino (atómico)."""
         with self._con() as c:
             c.execute("BEGIN IMMEDIATE")
-            if self.clave and destino == "subjefe":
-                # Lo que el jefe escribe en el PC lo inserta el MCP de JEFE_PC_DIR (ROL=jefe_pc), que no
-                # tiene la clave: el puente lo adopta y lo firma como del jefe en la misma transacción.
-                for f in c.execute("SELECT id, texto, creado FROM mensajes WHERE destino = 'subjefe'"
-                                   " AND estado = 'pendiente' AND origen = 'jefe_pc'").fetchall():
-                    c.execute("UPDATE mensajes SET origen = 'jefe', canal = 'pc', firma = ? WHERE id = ?",
-                              (_firma(self.clave, "jefe", "subjefe", f["texto"], f["creado"]), f["id"]))
             filas = c.execute(
                 "SELECT * FROM mensajes WHERE destino = ? AND estado = 'pendiente' ORDER BY id", (destino,)
             ).fetchall()
@@ -423,9 +424,12 @@ class Buzon:
             c.execute("UPDATE canal SET actividad_pc = MAX(actividad_pc, ?) WHERE id = 1", (float(cuando),))
 
     def cambiar_canal(self, canal: str, motivo: str, ahora: float | None = None) -> bool:
-        """Pone `canal` como activo. Si cambia, deja pendiente entregar en él lo que el jefe no vio en
-        el anterior: del PC, lo entregado desde su última actividad allí; del móvil, lo entregado desde
-        su último mensaje por Telegram. True si ha cambiado."""
+        """Pone `canal` como activo. True si ha cambiado.
+
+        Del PC al móvil deja dos cosas pendientes: entregar por Telegram lo que el subjefe dijo en el
+        PC desde la última actividad del jefe allí (de su transcripción), y que el próximo turno del
+        subjefe headless continúe la conversación del PC con --fork-session. Del móvil al PC no deja
+        nada: lo pone al día el hook UserPromptSubmit de la sesión del PC."""
         if canal not in CANALES:
             raise ValueError(f"canal desconocido: {canal!r}")
         ahora = time.time() if ahora is None else ahora
@@ -435,31 +439,118 @@ class Buzon:
             if fila["activo"] == canal:
                 c.execute("COMMIT")
                 return False
-            desde = fila["actividad_pc"] if fila["activo"] == "pc" else fila["ultimo_movil"]
+            de_pc = fila["activo"] == "pc"
             # Al pasar al PC cuenta como actividad: el plazo de inactividad empieza ahora.
             c.execute("UPDATE canal SET activo = ?, motivo = ?, cambiado = ?, al_dia_de = ?, al_dia_desde = ?,"
                       " actividad_pc = CASE WHEN ? = 'pc' THEN MAX(actividad_pc, ?) ELSE actividad_pc END"
-                      " WHERE id = 1", (canal, motivo, ahora, fila["activo"], desde, canal, ahora))
+                      " WHERE id = 1", (canal, motivo, ahora, "pc" if de_pc else None,
+                                        fila["actividad_pc"] if de_pc else None, canal, ahora))
+            if de_pc and fila["pc_session_id"]:
+                if not c.execute("UPDATE sesiones SET fork_de = ? WHERE nombre = 'subjefe'",
+                                 (fila["pc_session_id"],)).rowcount:
+                    c.execute("INSERT INTO sesiones (nombre, session_id, fork_de) VALUES ('subjefe', ?, ?)",
+                              (str(uuid.uuid4()), fila["pc_session_id"]))
             c.execute("COMMIT")
             return True
 
-    def tomar_no_visto(self, limite: int = 20) -> tuple[str, list[sqlite3.Row], int] | None:
-        """Si hay pendiente entregar en el canal activo lo no visto del anterior, lo devuelve
-        (canal anterior, filas de las más recientes `limite`, cuántas se han quedado fuera) y lo da
-        por entregado. Las recopilaciones anteriores no se vuelven a recopilar."""
+    def tomar_no_visto(self) -> tuple[float, str | None] | None:
+        """Si al pasar del PC al móvil quedó pendiente contar lo que el jefe no vio en el PC, devuelve
+        (desde, transcripción de la sesión del PC) y lo da por entregado."""
         with self._con() as c:
             c.execute("BEGIN IMMEDIATE")
             fila = self._fila_canal(c, time.time())
-            if not fila["al_dia_de"]:
+            if fila["al_dia_de"] != "pc":
                 c.execute("COMMIT")
                 return None
-            de, desde = fila["al_dia_de"], fila["al_dia_desde"] or 0
-            filas = c.execute("SELECT * FROM salidas WHERE canal = ? AND creado > ? AND recopilacion = 0"
-                              " ORDER BY id", (de, desde)).fetchall()
             c.execute("UPDATE canal SET al_dia_de = NULL, al_dia_desde = NULL WHERE id = 1")
             c.execute("COMMIT")
-        fuera = max(0, len(filas) - limite)
-        return de, filas[fuera:], fuera
+        return fila["al_dia_desde"] or 0.0, fila["pc_transcript"]
+
+    # --- subjefe en el PC (sesión de la app en SUBJEFE_DIR) ---
+    def registrar_pc(self, session_id: str | None, transcript: str | None) -> bool:
+        """Anota la conversación de la sesión del PC. True si es otra que la anterior."""
+        with self._con() as c:
+            fila = self._fila_canal(c, time.time())
+            if not session_id:
+                return False
+            c.execute("UPDATE canal SET pc_session_id = ?, pc_transcript = ? WHERE id = 1",
+                      (session_id, transcript))
+            return fila["pc_session_id"] != session_id
+
+    def fijar_saltos_pc(self, saltos: int, maximo: bool = False):
+        """saltos_pc = saltos (el jefe ha escrito en el PC: 0) o el mayor de los dos (informes)."""
+        with self._con() as c:
+            self._fila_canal(c, time.time())
+            c.execute("UPDATE canal SET saltos_pc = " + ("MAX(saltos_pc, ?)" if maximo else "?") + " WHERE id = 1",
+                      (int(saltos),))
+
+    def marcar_via_pc(self, ids: list[int]):
+        with self._con() as c:
+            c.executemany("UPDATE mensajes SET via = 'pc' WHERE id = ?", [(i,) for i in ids])
+
+    def tomar_para_pc(self) -> list[sqlite3.Row]:
+        """Pendientes del subjefe que se le dan al del PC (hook): quedan hechos y vistos en el PC."""
+        with self._con() as c:
+            c.execute("BEGIN IMMEDIATE")
+            filas = c.execute("SELECT * FROM mensajes WHERE destino = 'subjefe' AND estado = 'pendiente'"
+                              " ORDER BY id").fetchall()
+            c.executemany("UPDATE mensajes SET estado = 'hecho', via = 'pc' WHERE id = ?", [(f["id"],) for f in filas])
+            c.execute("COMMIT")
+            return filas
+
+    def novedades_movil(self, limite: int = 200) -> tuple[list[sqlite3.Row], list[sqlite3.Row], int, int]:
+        """Lo que pasó por el subjefe headless desde la última puesta al día del PC: mensajes que trató
+        (hechos, no vistos en el PC) y lo que dijo por Telegram. Devuelve también hasta qué id de cada
+        tabla se ha contado (lo que está en curso se deja para la próxima)."""
+        with self._con() as c:
+            fila = self._fila_canal(c, time.time())
+            en_curso = c.execute("SELECT MIN(id) FROM mensajes WHERE destino = 'subjefe' AND estado != 'hecho'"
+                                 " AND id > ?", (fila["pc_msg_id"],)).fetchone()[0]
+            tope_msg = (en_curso - 1) if en_curso else (c.execute("SELECT MAX(id) FROM mensajes").fetchone()[0] or 0)
+            mensajes = c.execute("SELECT * FROM mensajes WHERE destino = 'subjefe' AND estado = 'hecho'"
+                                 " AND via IS NULL AND id > ? AND id <= ? ORDER BY id DESC LIMIT ?",
+                                 (fila["pc_msg_id"], tope_msg, limite)).fetchall()[::-1]
+            tope_salida = c.execute("SELECT MAX(id) FROM salidas").fetchone()[0] or 0
+            salidas = c.execute("SELECT * FROM salidas WHERE canal = 'movil' AND recopilacion = 0 AND id > ?"
+                                " ORDER BY id DESC LIMIT ?", (fila["pc_salida_id"], limite)).fetchall()[::-1]
+        return mensajes, salidas, max(tope_msg, fila["pc_msg_id"]), tope_salida
+
+    def marcar_puesto_al_dia(self, msg_id: int, salida_id: int, ahora: float | None = None):
+        with self._con() as c:
+            c.execute("UPDATE canal SET pc_msg_id = MAX(pc_msg_id, ?), pc_salida_id = MAX(pc_salida_id, ?),"
+                      " pc_visto = ? WHERE id = 1", (int(msg_id), int(salida_id), time.time() if ahora is None else ahora))
+
+    def temas_cerrados_desde(self, desde: float | None, limite: int = 5) -> list[sqlite3.Row]:
+        with self._con() as c:
+            return c.execute("SELECT * FROM temas WHERE cerrado IS NOT NULL AND cerrado > ? ORDER BY cerrado DESC"
+                             " LIMIT ?", (float(desde or 0), limite)).fetchall()[::-1]
+
+    def anotar_jefe_tema_abierto(self, cuando: float, encargo: str = ""):
+        """El jefe ha escrito en el PC: el tema abierto no se cierra por inactividad. Si no hay
+        ninguno, abre uno: la conversación del PC forma parte de él, y así el primer turno headless
+        la continúa (con --fork-session) en vez de empezar un tema y una conversación nuevos."""
+        with self._con() as c:
+            if not c.execute("UPDATE temas SET ultimo_jefe = MAX(ultimo_jefe, ?) WHERE cerrado IS NULL",
+                             (float(cuando),)).rowcount:
+                c.execute("INSERT INTO temas (abierto, ultimo_jefe, encargo) VALUES (?, ?, ?)",
+                          (float(cuando), float(cuando), encargo[:300]))
+
+    # --- continuidad PC -> móvil: el subjefe headless continúa la conversación del PC ---
+    def tomar_fork(self, nombre: str) -> str | None:
+        """Conversación del PC pendiente de continuar con --fork-session (y la da por tomada)."""
+        with self._con() as c:
+            fila = c.execute("SELECT fork_de FROM sesiones WHERE nombre = ?", (nombre,)).fetchone()
+            if fila is None or not fila["fork_de"]:
+                return None
+            c.execute("UPDATE sesiones SET fork_de = NULL WHERE nombre = ?", (nombre,))
+            return fila["fork_de"]
+
+    def adoptar_sesion(self, nombre: str, session_id: str, directorio: str):
+        """La conversación de `nombre` pasa a ser `session_id` (la bifurcada del PC), ya iniciada."""
+        with self._con() as c:
+            c.execute("DELETE FROM sesiones WHERE nombre = ?", (nombre,))
+            c.execute("INSERT INTO sesiones (nombre, session_id, iniciada, directorio) VALUES (?, ?, 1, ?)",
+                      (nombre, session_id, directorio))
 
     def hay_no_visto(self) -> bool:
         with self._con() as c:

@@ -136,6 +136,10 @@ if modo == "alerta":
 
 if sid_nueva:
     estado["sesiones"].append(sid_nueva)
+if "--fork-session" in args:  # --resume X --fork-session: copia de X con un session_id nuevo
+    import uuid  # noqa: E402
+    sid_nueva = str(uuid.uuid4())
+    estado["sesiones"].append(sid_nueva)
 guardar()
 if modo == "error_max_budget":
     print(json.dumps({"type": "result", "subtype": "error_max_budget_usd", "is_error": True,

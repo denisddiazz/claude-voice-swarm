@@ -6,13 +6,12 @@ from dotenv import dotenv_values, load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 
-# El servidor MCP de una empresa, de una sesión externa o de la ventana del jefe en el PC no
-# necesita ningún secreto: no carga .env (el puente o el registro le pasan las rutas resueltas).
-if os.getenv("ROL") not in ("empresa", "externa", "jefe_pc"):
+# El servidor MCP de una empresa o de una sesión externa y el hook del subjefe en el PC no
+# necesitan ningún secreto: no cargan .env (el puente o el registro les pasan las rutas resueltas).
+if os.getenv("ROL") not in ("empresa", "externa", "hook_pc"):
     load_dotenv(ENV_FILE)
 
 _SUBJEFE_DIR_DEFECTO = r"C:\Cositas\Subjefe" if os.name == "nt" else "~/Subjefe"
-_JEFE_PC_DIR_DEFECTO = r"C:\Cositas\Jefe" if os.name == "nt" else "~/Jefe"
 
 
 def ruta_proyecto(valor, por_defecto: Path) -> Path:
@@ -54,11 +53,11 @@ class Config:
     TEMA_ESTADO_MAX_CHARS = int(_float("TEMA_ESTADO_MAX_CHARS", "1500"))  # estado inyectado al empezar
 
     # --- Canal PC (ver README, "Canal PC") ---
-    # Sesión de la app de escritorio donde el jefe habla con el subjefe desde el PC. Su carpeta
-    # tiene un .mcp.json con ROL=jefe_pc; el título es el nombre con que aparece en ListAgents.
-    # JEFE_PC_TITULO vacío = canal PC desactivado (todo va a Telegram, como antes).
-    JEFE_PC_DIR = ruta_proyecto(os.getenv("JEFE_PC_DIR"), Path(_JEFE_PC_DIR_DEFECTO))
-    JEFE_PC_TITULO = os.getenv("JEFE_PC_TITULO", "Jefe — ventana del subjefe en el PC").strip()
+    # Sesión de la app de escritorio abierta en SUBJEFE_DIR: es el subjefe, con el que el jefe
+    # habla directamente en el PC. SUBJEFE_DIR lleva un .mcp.json (ROL=subjefe_pc) y un hook
+    # UserPromptSubmit que escribe el puente. El título es el nombre con que la sesión aparece en
+    # ListAgents. Vacío = canal PC desactivado (todo por Telegram).
+    SUBJEFE_PC_TITULO = os.getenv("SUBJEFE_PC_TITULO", "Subjefe").strip()
     # Minutos sin actividad en el PC (teclado o ratón; si no se puede medir, sin mensajes del jefe
     # por el PC) tras los que el canal pasa solo al móvil. 0 = nunca por inactividad.
     PC_INACTIVIDAD_MIN = _float("PC_INACTIVIDAD_MIN", "15")
