@@ -26,12 +26,12 @@ $ErrorActionPreference = 'Stop'
 if (-Not $version) { throw "Hace falta Python 3.11 o 3.12 (py -0p lista los instalados). kokoro no funciona en 3.13+." }
 Write-Host "Usando Python $version"
 
-if (-Not (Test-Path ".\venv\Scripts\python.exe")) {
-    Invoke-Nativo py @("-$version", "-m", "venv", "venv")
+if (-Not (Test-Path ".\.venv\Scripts\python.exe")) {
+    Invoke-Nativo py @("-$version", "-m", "venv", ".venv")
 }
-$py = ".\venv\Scripts\python.exe"
+$py = ".\.venv\Scripts\python.exe"
 $pyver = & $py -c "import sys; print('%d.%d' % sys.version_info[:2])"
-if ($pyver -ne $version) { throw "El venv existente usa Python $pyver; bórralo (carpeta venv) y repite." }
+if ($pyver -ne $version) { throw "El venv existente usa Python $pyver; bórralo (carpeta .venv) y repite." }
 Invoke-Nativo $py @("-m", "pip", "install", "--upgrade", "pip")
 if (-Not $TorchCuda) {
     # TORCH_CPU: torch solo CPU desde el índice oficial de PyTorch, antes de que kokoro arrastre otro.

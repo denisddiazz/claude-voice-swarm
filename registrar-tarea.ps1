@@ -12,7 +12,7 @@ if ($Quitar) {
     Write-Host "Tarea $Nombre eliminada."
     return
 }
-if (-Not (Test-Path ".\venv\Scripts\python.exe")) { throw "No existe venv. Ejecuta antes .\install.ps1" }
+if (-Not (Test-Path ".\.venv\Scripts\python.exe")) { throw "No existe .venv. Ejecuta antes .\install.ps1" }
 if (-Not (Test-Path ".env")) { throw "No existe .env. Ejecuta antes .\install.ps1 y rellénalo." }
 
 $usuario = "$env:USERDOMAIN\$env:USERNAME"

@@ -4,8 +4,8 @@
 param([switch]$Log)
 Set-Location $PSScriptRoot
 $env:PYTHONUTF8 = "1"
-$py = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
-if (-Not (Test-Path $py)) { throw "No existe venv. Ejecuta antes .\install.ps1" }
+$py = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
+if (-Not (Test-Path $py)) { throw "No existe .venv. Ejecuta antes .\install.ps1" }
 New-Item -ItemType Directory -Force "datos" | Out-Null
 $logFile = Join-Path $PSScriptRoot "datos\puente.log"
 
