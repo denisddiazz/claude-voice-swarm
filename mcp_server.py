@@ -1,6 +1,6 @@
 """Servidor MCP del buzón. Cada sesión de Claude Code lo lanza con su rol:
 
-- ROL=subjefe -> encargar, crear_sesion, listar_sesiones, estado_empresas, alerta_urgente
+- ROL=subjefe -> encargar, crear_sesion, listar_sesiones, estado_empresas, alerta_urgente, cerrar_tema
 - ROL=empresa -> informar_al_subjefe
 - ROL=externa -> informar_al_subjefe para sesiones abiertas por el usuario (se dan de alta solas)
 
@@ -66,6 +66,15 @@ if ROL == "subjefe":
         ok = await enviar_alerta_ntfy(mensaje, titulo=titulo)
         buzon.registrar_alerta("subjefe", enviada=ok)
         return "Alerta enviada al móvil del jefe." if ok else "No se pudo enviar la alerta."
+
+    @mcp.tool()
+    async def cerrar_tema(resumen: str, pendientes: str = "", nuevo_asunto: bool = False) -> str:
+        """Da por terminado el tema actual. El próximo turno empieza una conversación nueva que solo
+        recibe tu CLAUDE.md, este resumen y los mensajes nuevos. `resumen`: 1 a 3 líneas de lo hecho y
+        decidido. `pendientes`: lo que queda abierto, incluidos los pendientes heredados no resueltos.
+        `nuevo_asunto`: true si cierras porque el jefe ha cambiado de asunto; sus mensajes de este
+        turno se te entregarán otra vez en la sesión nueva, así que no los atiendas ahora."""
+        return herramientas.cerrar_tema(buzon, resumen, pendientes, nuevo_asunto)
 
     @mcp.tool()
     async def estado_empresas() -> str:

@@ -56,6 +56,18 @@ CREATE TABLE IF NOT EXISTS sesiones_registradas (
     modelo TEXT,
     creado REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS temas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    abierto REAL NOT NULL,
+    ultimo_jefe REAL NOT NULL,            -- último mensaje del jefe (cierre por inactividad)
+    encargo TEXT NOT NULL DEFAULT '',     -- primer mensaje del jefe del tema, abreviado
+    cerrado REAL,                         -- NULL = tema abierto (solo uno a la vez)
+    motivo TEXT,
+    resumen TEXT,
+    pendientes TEXT,
+    nuevo_asunto INTEGER NOT NULL DEFAULT 0,  -- el subjefe cerró porque el jefe cambió de asunto
+    cierre_pedido TEXT                    -- motivo de un cierre forzado en curso o pendiente
+);
 CREATE TABLE IF NOT EXISTS alertas (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     origen TEXT NOT NULL,
@@ -257,6 +269,65 @@ class Buzon:
         """Quita la sesión del registro. No toca su carpeta. True si existía."""
         with self._con() as c:
             return c.execute("DELETE FROM sesiones_registradas WHERE nombre = ?", (nombre,)).rowcount > 0
+
+    # --- temas del subjefe (cada tema, una conversación; ver temas.py) ---
+    def tema_abierto(self):
+        with self._con() as c:
+            return c.execute("SELECT * FROM temas WHERE cerrado IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+
+    def tema(self, tema_id: int):
+        with self._con() as c:
+            return c.execute("SELECT * FROM temas WHERE id = ?", (tema_id,)).fetchone()
+
+    def hay_temas(self) -> bool:
+        with self._con() as c:
+            return c.execute("SELECT 1 FROM temas LIMIT 1").fetchone() is not None
+
+    def abrir_tema(self, encargo: str = "", ahora: float | None = None) -> int:
+        ahora = time.time() if ahora is None else ahora
+        with self._con() as c:
+            return c.execute("INSERT INTO temas (abierto, ultimo_jefe, encargo) VALUES (?, ?, ?)",
+                             (ahora, ahora, encargo)).lastrowid
+
+    def anotar_jefe_tema(self, tema_id: int, creado: float, texto: str):
+        """Último mensaje del jefe del tema; el primero queda como encargo."""
+        with self._con() as c:
+            c.execute("UPDATE temas SET ultimo_jefe = MAX(ultimo_jefe, ?),"
+                      " encargo = CASE WHEN encargo = '' THEN ? ELSE encargo END WHERE id = ?",
+                      (float(creado), texto, tema_id))
+
+    def pedir_cierre_tema(self, motivo: str) -> bool:
+        """Marca el tema abierto para cerrarlo con `motivo` antes del próximo turno. True si había tema."""
+        with self._con() as c:
+            return c.execute("UPDATE temas SET cierre_pedido = ? WHERE cerrado IS NULL",
+                             (motivo,)).rowcount > 0
+
+    def cerrar_tema(self, resumen: str, pendientes: str, motivo: str, nuevo_asunto: bool = False) -> int | None:
+        """Cierra el tema abierto. Si el puente pidió el cierre, el motivo es el suyo. Devuelve su id."""
+        with self._con() as c:
+            c.execute("BEGIN IMMEDIATE")
+            fila = c.execute("SELECT id FROM temas WHERE cerrado IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+            if fila is None:
+                c.execute("COMMIT")
+                return None
+            c.execute("UPDATE temas SET cerrado = ?, resumen = ?, pendientes = ?, nuevo_asunto = ?,"
+                      " motivo = COALESCE(cierre_pedido, ?) WHERE id = ?",
+                      (time.time(), resumen, pendientes, int(nuevo_asunto), motivo, fila["id"]))
+            c.execute("COMMIT")
+            return fila["id"]
+
+    def temas_cerrados(self, limite: int = 8) -> list[sqlite3.Row]:
+        """Del más reciente al más antiguo."""
+        with self._con() as c:
+            return c.execute("SELECT * FROM temas WHERE cerrado IS NOT NULL ORDER BY cerrado DESC, id DESC"
+                             " LIMIT ?", (limite,)).fetchall()
+
+    def encargados_entre(self, desde: float, hasta: float) -> list[str]:
+        """Sesiones a las que el subjefe encargó algo en ese intervalo."""
+        with self._con() as c:
+            return [f[0] for f in c.execute(
+                "SELECT destino FROM mensajes WHERE origen = 'subjefe' AND creado BETWEEN ? AND ?"
+                " GROUP BY destino ORDER BY MIN(id)", (desde, hasta))]
 
     # --- gasto ---
     def registrar_gasto(self, nombre: str, coste_usd: float):

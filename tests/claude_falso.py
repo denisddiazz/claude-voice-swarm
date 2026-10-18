@@ -9,6 +9,8 @@ Cada llamada consume un modo (el último se repite). Modos:
 - error: JSON con is_error=true (p. ej. sin sesión iniciada).
 - error_max_budget: JSON con subtype error_max_budget_usd.
 - dormir: espera 30 s (para probar timeouts).
+- cerrar_tema: como ok, pero antes llama a herramientas.cerrar_tema con "cierre" del control
+  ({"resumen", "pendientes", "nuevo_asunto"}) en el buzón de su --mcp-config.
 Simula las sesiones: --session-id con un UUID ya usado o --resume de uno inexistente fallan sin JSON.
 "existentes": lista de UUID que se dan por creados fuera (sesiones externas).
 Registra en <control>.log una línea JSON por llamada (argv, env, stdin, cwd).
@@ -67,6 +69,17 @@ if modo == "error":
     print(json.dumps({"type": "result", "subtype": "success", "is_error": True,
                       "result": "Not logged in", "total_cost_usd": 0}))
     sys.exit(1)
+
+if modo == "cerrar_tema":
+    # Como si el subjefe llamara a la herramienta MCP cerrar_tema: mismo buzón que su --mcp-config.
+    mcp_env = json.loads(Path(valor("--mcp-config")).read_text(encoding="utf-8"))["mcpServers"]["buzon"]["env"]
+    os.environ.update(mcp_env)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import herramientas  # noqa: E402
+    from buzon import Buzon  # noqa: E402
+    cierre = conf.get("cierre", {})
+    herramientas.cerrar_tema(Buzon(), cierre.get("resumen", "resumen del tema"), cierre.get("pendientes", ""),
+                             cierre.get("nuevo_asunto", False))
 
 if sid_nueva:
     estado["sesiones"].append(sid_nueva)

@@ -96,6 +96,17 @@ Los nombres solo admiten `a-z`, `0-9`, `_` y `-`; `jefe`, `subjefe` y `sistema` 
 
 Ninguna sesión, externa o no, puede tener como carpeta la del puente, la de `datos/` o la del subjefe.
 
+### Temas del subjefe
+
+El subjefe no tiene una conversación eterna sino una por tema (lógica en `temas.py`, estado en la tabla `temas` del buzón). Mientras el tema está abierto, cada turno reanuda la misma conversación con `--resume`. Hay un solo tema abierto a la vez y se cierra de cuatro formas:
+
+1. **El subjefe** llama a `cerrar_tema(resumen, pendientes, nuevo_asunto)` cuando das el asunto por bueno o cambias a otro. Con `nuevo_asunto=true` el puente le vuelve a entregar tus mensajes de ese turno en la conversación nueva.
+2. **Tú**, con `/nuevo_tema`: el puente pide el resumen al subjefe en un turno corto.
+3. **Inactividad**: si pasan `TEMA_INACTIVIDAD_MIN` minutos (120) sin mensajes tuyos, el siguiente mensaje cierra antes el tema anterior con resumen.
+4. **Tamaño**: si la transcripción del tema supera `TEMA_MAX_KB` (600), se rota igual y el log lo avisa.
+
+Si en un cierre forzado el subjefe no deja resumen, se guarda uno mínimo que conserva los pendientes anteriores. La conversación siguiente empieza de cero y recibe solo su `CLAUDE.md`, el protocolo y un estado de `TEMA_ESTADO_MAX_CHARS` caracteres (1500) como máximo: los pendientes abiertos, los temas cerrados recientes (fecha, tu encargo abreviado, a qué sesiones se encargó y su resumen; los más antiguos se recortan) y las sesiones disponibles. Así el subjefe sabe a qué se refiere un informe que llega sobre un tema ya cerrado. La primera vez, la conversación anterior a los temas se adopta como tema abierto y se cierra por estas mismas reglas. Modelo y esfuerzo del subjefe: `SUBJEFE_MODEL` (`haiku`) y `SUBJEFE_EFFORT` (`medium`, se pasa como `--effort`).
+
 ## Permisos
 
 **Los permisos se gestionan en cada carpeta**, como en cualquier sesión de Claude Code: `.claude/settings.json` y `.claude/settings.local.json` de la carpeta de la sesión, más tus settings de usuario (`~/.claude/settings.json`). El puente no los impone ni los valida. Por defecto no pasa `--permission-mode`, `--setting-sources` ni reglas de permisos propias; solo añade `--allowedTools mcp__buzon` para que la sesión pueda usar la herramienta del puente (`informar_al_subjefe`), y las sustituciones que pongas en `empresas.json`.
@@ -133,7 +144,8 @@ Todo es opcional y está desactivado por defecto (vacío o `0` = sin tope). Las 
 | `/start` | Comprueba que estás autorizado |
 | `/estado` | Qué sesiones están trabajando, cuántos mensajes tienen en cola y gasto de hoy |
 | `/probar_alerta` | Envía una alerta de prueba a ntfy |
-| `/nueva_sesion <nombre>` | Olvida la conversación del subjefe o de una sesión; el siguiente turno empieza de cero. No vale para las que reanudan una conversación existente (externas o con `session_id`) |
+| `/nuevo_tema` | Cierra el tema del subjefe: le pide un resumen y el siguiente mensaje empieza una conversación nueva con él. Si el subjefe está en un turno, el cierre se hace antes del siguiente mensaje |
+| `/nueva_sesion <nombre>` | Olvida la conversación del subjefe o de una sesión; el siguiente turno empieza de cero (en el subjefe, cierra el tema sin resumen). No vale para las que reanudan una conversación existente (externas o con `session_id`) |
 | `/borrar_sesion <nombre>` | Quita del registro una sesión creada con `crear_sesion` o una externa. No borra su carpeta ni la conversación de una externa. Las de `empresas.json` se quitan editando ese fichero |
 
 ## Cómo funciona por dentro

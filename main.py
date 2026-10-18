@@ -8,6 +8,7 @@ from datetime import date
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
+import temas
 from buzon import Buzon
 from comunicaciones import responder_por_telegram, set_bot
 from config import Config
@@ -105,6 +106,10 @@ class Puente:
 
         escribiendo = asyncio.create_task(self._indicador(modo_voz))
         try:
+            # Un tema = una conversación: cierra el anterior si toca y, si la conversación es nueva,
+            # le antepone el estado acotado que dejaron los temas cerrados.
+            estado, tema_id, tema_nuevo = await temas.preparar_turno(self.buzon, self.empresas)
+            prompt = estado + prompt
             respuesta = await ejecutar_turno(
                 self.buzon, "subjefe", prompt, Config.SUBJEFE_DIR,
                 # crear_sesion solo se habilita si en este turno hay un mensaje del jefe con firma válida.
@@ -118,8 +123,14 @@ class Puente:
             escribiendo.cancel()
             self.recargar_empresas()
 
+        reenviados = temas.tras_turno(self.buzon, filas, tema_id, tema_nuevo)
+        if reenviados:
+            logger.info(f"[subjefe] asunto nuevo: {reenviados} mensajes del jefe pasan a la sesión nueva")
         if respuesta and respuesta.strip() != SILENCIO:
             await responder_por_telegram(respuesta, modo_voz=modo_voz)
+
+    async def cerrar_tema(self, motivo: str) -> str:
+        return await temas.cerrar_forzado(self.buzon, self.empresas, motivo)
 
     async def _turno_empresa(self, nombre: str, filas):
         e = self.empresas[nombre]
@@ -207,6 +218,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(
             "Listo. Háblale al subjefe por voz o por texto.\n"
             "/estado: qué está haciendo cada uno y gasto de hoy\n/probar_alerta: prueba ntfy\n"
+            "/nuevo_tema: cierra el tema del subjefe con un resumen y empieza otro\n"
             "/nueva_sesion <nombre>: olvida la conversación del subjefe o de una empresa\n"
             "/borrar_sesion <nombre>: quita una sesión creada con crear_sesion o una externa "
             "(no borra su carpeta ni, si es externa, su conversación)"
@@ -244,8 +256,36 @@ async def cmd_nueva_sesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{nombre} reanuda una conversación existente ({e.origen}): no se puede empezar otra desde aquí. "
             "Usa /borrar_sesion o cambia session_id en empresas.json.")
         return
+    if nombre == "subjefe":
+        temas.cerrar_sin_resumen(puente.buzon, "nueva_sesion")  # la conversación nueva abre otro tema
     puente.buzon.nueva_sesion(nombre)
     await update.effective_message.reply_text(f"La próxima vez, {nombre} empezará una conversación nueva.")
+
+
+async def cmd_nuevo_tema(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cierra el tema del subjefe: le pide un resumen en un turno corto y el siguiente mensaje
+    empieza una conversación nueva con ese resumen."""
+    if not await _autorizado(update):
+        return
+    if puente.buzon.tema_abierto() is None:
+        await update.effective_message.reply_text("No hay ningún tema abierto: el próximo mensaje empezará uno.")
+        return
+    if "subjefe" in puente.trabajando:
+        puente.buzon.pedir_cierre_tema("jefe")
+        await update.effective_message.reply_text(
+            "El subjefe está en un turno: el tema se cerrará, con su resumen, antes del siguiente mensaje.")
+        return
+    # Ocupa el puesto del subjefe para que el despachador no lance otro turno a la vez.
+    tarea = asyncio.create_task(puente.cerrar_tema("jefe"))
+    puente.trabajando["subjefe"] = tarea
+    tarea.add_done_callback(lambda _t: puente.trabajando.pop("subjefe", None))
+    try:
+        resumen = await tarea
+    except Exception as e:
+        logger.exception("Fallo al cerrar el tema")
+        await update.effective_message.reply_text(f"No se pudo cerrar el tema: {e}")
+        return
+    await update.effective_message.reply_text(f"Tema cerrado. Resumen: {resumen or '(sin resumen)'}")
 
 
 async def cmd_borrar_sesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -314,6 +354,7 @@ def main():
     app.add_handler(CommandHandler("estado", cmd_estado))
     app.add_handler(CommandHandler("probar_alerta", cmd_probar_alerta))
     app.add_handler(CommandHandler("nueva_sesion", cmd_nueva_sesion))
+    app.add_handler(CommandHandler("nuevo_tema", cmd_nuevo_tema))
     app.add_handler(CommandHandler("borrar_sesion", cmd_borrar_sesion))
     # Solo mensajes nuevos: editar un mensaje no reenvía la orden (M7).
     solo_nuevos = filters.UpdateType.MESSAGE

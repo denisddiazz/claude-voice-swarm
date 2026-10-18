@@ -66,6 +66,12 @@ del puente, la orden no se entrega y recibes un aviso del sistema: díselo al je
 
 Si `encargar` te dice que se ha alcanzado el límite de encargos encadenados, para y pregunta al jefe.
 
+TEMAS. Cada tema es una conversación. Cuando el tema termine (el jefe lo da por bueno o cambia a un \
+asunto no relacionado), llama a `cerrar_tema` con un resumen de 1 a 3 líneas y los pendientes que sigan \
+abiertos. Si cierras porque llega un asunto nuevo, pasa nuevo_asunto=true y no lo atiendas: te llegará \
+otra vez en la sesión nueva. Al empezar una sesión nueva recibes el estado que dejaste (temas cerrados, \
+pendientes); las respuestas de las sesiones sobre esos temas pueden llegar después.
+
 Tu respuesta final de cada turno se le entrega al jefe tal cual, y puede leerse en voz alta: \
 breve, natural, en español, sin markdown ni listas. Si en este turno no hay nada que merezca \
 molestar al jefe, responde exactamente {SILENCIO}. Si algo es grave o no puede esperar, usa además \
@@ -154,10 +160,25 @@ def _presupuesto(valor: float | None) -> list[str]:
     return ["--max-budget-usd", str(valor)] if valor and valor > 0 else []
 
 
+ESFUERZOS = ("low", "medium", "high", "xhigh", "max")  # valores de `claude --effort` (2.1.296)
+
+
+def _esfuerzo(valor: str | None) -> list[str]:
+    """Vacío = el de Claude Code. Un valor desconocido no se pasa: claude rechazaría todos los turnos."""
+    valor = (valor or "").strip().lower()
+    if not valor:
+        return []
+    if valor not in ESFUERZOS:
+        logger.warning(f"SUBJEFE_EFFORT={valor!r} no es válido ({', '.join(ESFUERZOS)}); se ignora")
+        return []
+    return ["--effort", valor]
+
+
 def args_subjefe(empresas: dict[str, Empresa], saltos: int = 0, permitir_crear: bool = False) -> list[str]:
     extra = {"SALTOS": saltos, "MAX_REBOTES": Config.MAX_REBOTES, "PERMITIR_CREAR": int(permitir_crear)}
     return [
         "--model", Config.SUBJEFE_MODEL,
+        *_esfuerzo(Config.SUBJEFE_EFFORT),
         "--tools", "Skill",                  # sin herramientas de trabajo: solo delega y carga sus skills
         "--strict-mcp-config",
         "--setting-sources", "project",      # sin settings de usuario (hooks, defaultMode...); sí las

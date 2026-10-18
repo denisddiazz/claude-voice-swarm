@@ -31,6 +31,8 @@ class Config:
     # --- Claude Code ---
     CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
     SUBJEFE_MODEL = os.getenv("SUBJEFE_MODEL", "haiku")
+    # --effort de claude -p (low, medium, high, xhigh, max); vacío = el de Claude Code.
+    SUBJEFE_EFFORT = os.getenv("SUBJEFE_EFFORT", "medium").strip().lower()
     SUBJEFE_TIMEOUT = int(os.getenv("SUBJEFE_TIMEOUT", "300"))
     EMPRESA_TIMEOUT = int(os.getenv("EMPRESA_TIMEOUT", "3600"))
     EMPRESAS_FILE = ruta_proyecto(os.getenv("EMPRESAS_FILE"), BASE_DIR / "empresas.json")
@@ -42,6 +44,12 @@ class Config:
     # Sesiones externas: no se reanudan si su conversación tuvo actividad fuera del puente hace
     # menos de estos minutos (probablemente está abierta en la app). 0 = sin comprobación.
     EXTERNA_MARGEN_MIN = _float("EXTERNA_MARGEN_MIN", "10")
+    # Temas del subjefe: cada tema es una conversación; al cerrarse, la siguiente empieza de cero
+    # con un resumen. Se cierra tras estos minutos sin mensajes del jefe (0 = nunca por inactividad),
+    # si su transcripción supera estos KB (0 = sin límite) o a petición del subjefe o del jefe.
+    TEMA_INACTIVIDAD_MIN = _float("TEMA_INACTIVIDAD_MIN", "120")
+    TEMA_MAX_KB = _float("TEMA_MAX_KB", "600")
+    TEMA_ESTADO_MAX_CHARS = int(_float("TEMA_ESTADO_MAX_CHARS", "1500"))  # estado inyectado al empezar
 
     # --- Gasto (opcional; 0 = sin tope) ---
     SUBJEFE_MAX_BUDGET_USD = _float("SUBJEFE_MAX_BUDGET_USD", "0")  # por turno del subjefe

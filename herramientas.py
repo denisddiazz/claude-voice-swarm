@@ -29,6 +29,25 @@ def encargar(buzon: Buzon, empresas: dict[str, Empresa] | None, error_carga: str
     return f"Orden entregada a {empresa}. Su informe llegará más tarde."
 
 
+RESUMEN_TEMA_MAX = 500
+PENDIENTES_TEMA_MAX = 500
+
+
+def cerrar_tema(buzon: Buzon, resumen: str, pendientes: str = "", nuevo_asunto: bool = False) -> str:
+    """El subjefe da por terminado el tema: el puente empezará una conversación nueva en el próximo
+    turno y le pasará este resumen. Los textos se recortan para que el estado no crezca."""
+    resumen = " ".join((resumen or "").split())[:RESUMEN_TEMA_MAX]
+    pendientes = " ".join((pendientes or "").split())[:PENDIENTES_TEMA_MAX]
+    if not resumen:
+        return "No cerrado: falta el resumen (de 1 a 3 líneas)."
+    if buzon.cerrar_tema(resumen, pendientes, "subjefe", nuevo_asunto) is None:
+        return "No hay ningún tema abierto."
+    if nuevo_asunto:
+        return ("Tema cerrado. No atiendas ahora el asunto nuevo: el puente te volverá a entregar los "
+                "mensajes del jefe de este turno en una sesión nueva, con este resumen. Responde [SILENCIO].")
+    return "Tema cerrado. El próximo turno empezará una sesión nueva con este resumen."
+
+
 def crear_sesion(buzon: Buzon, empresas: dict[str, Empresa] | None, permitido: bool,
                  nombre: str, carpeta: str, descripcion: str, modelo: str | None = None,
                  protegidas: list[Path] | None = None) -> str:

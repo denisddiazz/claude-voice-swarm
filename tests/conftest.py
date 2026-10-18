@@ -34,9 +34,10 @@ class ClaudeFalso:
         self.control = tmp_path / "control.json"
         self.configurar()
 
-    def configurar(self, modos=("ok",), resultado="hecho", coste=0.0, existentes=()):
+    def configurar(self, modos=("ok",), resultado="hecho", coste=0.0, existentes=(), cierre=None):
         self.control.write_text(json.dumps({"modos": list(modos), "resultado": resultado, "coste": coste,
-                                            "existentes": list(existentes)}), encoding="utf-8")
+                                            "existentes": list(existentes), "cierre": cierre or {}}),
+                                encoding="utf-8")
 
     def llamadas(self) -> list[dict]:
         log = Path(str(self.control) + ".log")
