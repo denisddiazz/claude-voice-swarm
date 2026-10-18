@@ -30,7 +30,11 @@ modos = conf.get("modos", ["ok"])
 modo = modos[min(estado["n"], len(modos) - 1)]
 estado["n"] += 1
 
-entrada = sys.stdin.read()
+# Como claude: el prompt llega en UTF-8 y la respuesta sale en UTF-8, sea cual sea el locale
+# (sin PYTHONUTF8, Python leería stdin como cp1252 en Windows).
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+entrada = sys.stdin.buffer.read().decode("utf-8")
 with open(str(control) + ".log", "a", encoding="utf-8") as f:
     f.write(json.dumps({"argv": args, "env": dict(os.environ), "stdin": entrada, "cwd": os.getcwd(),
                         "modo": modo}) + "\n")
@@ -91,4 +95,4 @@ if modo == "error_max_budget":
     sys.exit(1)
 print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
                   "result": conf.get("resultado", "hecho"), "total_cost_usd": conf.get("coste", 0.0),
-                  "session_id": sid_nueva or sid_resume}))
+                  "session_id": sid_nueva or sid_resume}, ensure_ascii=False))

@@ -99,6 +99,13 @@ def test_asunto_nuevo_en_un_tema_recien_abierto_no_hace_bucle(main_mod, claude_f
     assert len(claude_falso.llamadas()) == 1
 
 
+def test_acentos_llegan_en_utf8_en_los_dos_sentidos(main_mod, claude_falso):
+    claude_falso.configurar(resultado="Sí, añadido «marzo» al informe")
+    _jefe(main_mod, "añade también «marzo», por favor")
+    assert "añade también «marzo», por favor" in claude_falso.llamadas()[0]["stdin"]
+    assert main_mod.responder_por_telegram.await_args.args[0] == "Sí, añadido «marzo» al informe"
+
+
 # --- cierres forzados ---
 def test_nuevo_tema_pide_resumen_y_rota(main_mod, claude_falso):
     _jefe(main_mod, "prepara el informe de ventas")
@@ -253,6 +260,6 @@ def test_esfuerzo_por_defecto_medium(tmp_path):
     env = {k: v for k, v in os.environ.items() if k != "SUBJEFE_EFFORT"}
     env["ROL"] = "externa"
     salida = subprocess.run([sys.executable, "-c", "from config import Config; print(Config.SUBJEFE_EFFORT)"],
-                            cwd=Path(sesiones.__file__).parent, env=env, capture_output=True, text=True, check=True)
+                            cwd=Path(sesiones.__file__).parent, env=env, capture_output=True, encoding="utf-8", check=True)
     assert salida.stdout.strip() == "medium"
     assert "--effort" in sesiones.args_subjefe({})
