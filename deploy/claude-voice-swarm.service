@@ -1,0 +1,28 @@
+# Servicio systemd del puente. Sustituye USUARIO y RUTA (ver README, "Despliegue en WSL2"):
+#   sed -e "s|USUARIO|$USER|g" -e "s|RUTA|$PWD|g" deploy/claude-voice-swarm.service \
+#     | sudo tee /etc/systemd/system/claude-voice-swarm.service
+[Unit]
+Description=Claude Voice Swarm (puente Telegram - Claude Code)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=USUARIO
+WorkingDirectory=RUTA
+Environment=PYTHONUTF8=1
+Environment=HOME=/home/USUARIO
+Environment=PATH=/home/USUARIO/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=RUTA/venv/bin/python RUTA/main.py
+Restart=on-failure
+RestartSec=10
+# Al parar, mata también las sesiones de claude y sus comandos en curso.
+KillMode=control-group
+TimeoutStopSec=30
+# Sin sudo ni setuid para nada que lancen las empresas; /usr, /boot y /etc de solo lectura.
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
