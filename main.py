@@ -259,6 +259,7 @@ async def cmd_borrar_sesion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not puente.buzon.borrar_sesion_registrada(nombre):
         await update.effective_message.reply_text(f"No existe la sesión '{nombre}'.")
         return
+    puente.buzon.nueva_sesion(nombre)  # olvida la conversación: recrearla con el mismo nombre empieza de cero
     puente.recargar_empresas()
     await update.effective_message.reply_text(f"Sesión '{nombre}' borrada. Su carpeta {e.directorio} no se ha tocado.")
 

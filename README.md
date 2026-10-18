@@ -157,5 +157,5 @@ Usan un `claude` falso (`tests/claude_falso.py`); no llaman a la API ni a Telegr
 - Los mensajes del jefe que quedaron en cola antes de un reinicio llegan al subjefe como `no_verificado` (la clave de firma cambia en cada arranque); el subjefe debe pedirte confirmación, y en ese turno no puede crear sesiones.
 - El tope diario cuenta el coste que declara Claude Code al final de cada turno. Un turno cortado por timeout no declara coste, y varias sesiones en paralelo pueden pasar el tope.
 - Un fallo transitorio (sobrecarga, límite de uso, red) no se reintenta: el mensaje se da por procesado y el subjefe o tú recibís el error.
-- `/borrar_sesion` no borra la memoria de conversación de esa sesión: si después creas otra con el mismo nombre, reanuda la conversación anterior, si quieres empezar de cero, usa `/nueva_sesion` antes de borrarla.
+- `/borrar_sesion` olvida también la conversación de la sesión: si la recreas con el mismo nombre, empieza de cero. Su carpeta no se toca.
 - Kokoro y Whisper se cargan la primera vez que hacen falta y se quedan en memoria (~1–2 GB según el modelo de Whisper) [ESTIMACIÓN SIN FUENTE].

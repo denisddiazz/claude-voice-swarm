@@ -41,7 +41,7 @@ def _respuesta(update) -> str:
 
 def _crear_registrada(main, tmp_path, nombre="nueva"):
     carpeta = tmp_path / "trabajos" / nombre
-    carpeta.mkdir(parents=True)
+    carpeta.mkdir(parents=True, exist_ok=True)
     main.puente.buzon.registrar_sesion(nombre, str(carpeta), "Pruebas", None)
     main.puente.recargar_empresas()
     return carpeta
@@ -55,6 +55,16 @@ def test_borra_sesion_creada_pero_no_su_carpeta(main_mod, tmp_path):
     assert "nueva" not in main_mod.puente.empresas
     assert main_mod.puente.buzon.sesiones_registradas() == []
     assert carpeta.is_dir()
+
+
+def test_recrear_con_el_mismo_nombre_empieza_de_cero(main_mod, tmp_path):
+    _crear_registrada(main_mod, tmp_path)
+    buzon = main_mod.puente.buzon
+    sid_antigua, _ = buzon.sesion("nueva")  # conversación de la sesión borrada
+    asyncio.run(main_mod.cmd_borrar_sesion(_update(), _ctx("nueva")))
+    _crear_registrada(main_mod, tmp_path)
+    sid_nueva, iniciada = buzon.sesion("nueva")
+    assert sid_nueva != sid_antigua and not iniciada
 
 
 def test_nombre_inexistente_responde_error(main_mod, tmp_path):
